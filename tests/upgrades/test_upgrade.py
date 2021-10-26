@@ -31,42 +31,59 @@ def get_ansible_conf(config, version, is_repo_present, is_ceph_conf_present):
     Returns:
         ansible configuration for install or upgrade
     """
-    platform = config["rhbuild"].split("-", 1)[1]
-    config["ansi_config"] = config["suite_setup"]
+    # try setting required config to a new variable and use a new variable in the calling method as well
+    # pass the ansi_config and config parameters correctly from test suite
+
+    install_config = config.get("paths").get(version).get("config")
+    # if config.get("paths").get(version).get("config").get("use_cdn"):
+    #     config["use_cdn"] = config.get("paths").get(version).get("config").get("use_cdn")
+    #     config["build"] = config.get("paths").get(version).get("config").get("build")
     if not is_ceph_conf_present:
-        config["ansi_config"]["ceph_origin"] = "distro"
-        config["ansi_config"]["ceph_repository"] = "rhcs"
-        config["ansi_config"]["ceph_rhcs_version"] = version.split(".")[0]
+        install_config["ansi_config"]["ceph_origin"] = "distro"
+        install_config["ansi_config"]["ceph_repository"] = "rhcs"
+        install_config["ansi_config"]["ceph_rhcs_version"] = int(version)
 
     release_info = load_file("release.yaml")
 
+    if install_config.get("use_cdn"):
+        install_config["ansi_config"]["ceph_origin"] = "repository"
+
+    if 3 <= version < 4:
+        install_config["rhbuild"] = str(version)
+        return install_config
+
+    platform = config["rhbuild"].split("-", 1)[1]
+    install_config["rhbuild"] = "-".join([str(version), platform])
+
     if not is_repo_present:
-        config["base_url"] = release_info["releases"][version]["composes"][platform]
+        install_config["base_url"] = release_info["releases"][version]["composes"][platform]
         container_image = release_info["releases"][version]["image"]["ceph"]
     else:
+        install_config["base_url"] = config["base_url"]
         container_image = config["container_image"]
 
-    config["ansi_config"]["ceph_docker_registry"] = container_image.split("/", 1)[0]
-    config["ansi_config"]["ceph_docker_image"] = container_image.split("/", 1)[1].split(
+    install_config["container_image"] = container_image
+    install_config["ansi_config"]["ceph_docker_registry"] = container_image.split("/", 1)[0]
+    install_config["ansi_config"]["ceph_docker_image"] = container_image.split("/", 1)[1].split(
         ":"
     )[0]
-    config["ansi_config"]["ceph_docker_image_tag"] = container_image.split("/", 1)[
+    install_config["ansi_config"]["ceph_docker_image_tag"] = container_image.split("/", 1)[
         1
     ].split(":")[1]
-    config["ansi_config"]["node_exporter_container_image"] = release_info["releases"][
+    install_config["ansi_config"]["node_exporter_container_image"] = release_info["releases"][
         version
     ]["image"]["nodeexporter"]
-    config["ansi_config"]["grafana_container_image"] = release_info["releases"][
+    install_config["ansi_config"]["grafana_container_image"] = release_info["releases"][
         version
     ]["image"]["grafana"]
-    config["ansi_config"]["prometheus_container_image"] = release_info["releases"][
+    install_config["ansi_config"]["prometheus_container_image"] = release_info["releases"][
         version
     ]["image"]["prometheus"]
-    config["ansi_config"]["alertmanager_container_image"] = release_info["releases"][
+    install_config["ansi_config"]["alertmanager_container_image"] = release_info["releases"][
         version
     ]["image"]["alertmanager"]
-    config["rhbuild"] = "-".join([version, platform])
-    return config
+
+    return install_config
 
 
 def get_cephadm_upgrade_config(config, version):
@@ -104,14 +121,15 @@ def run(ceph_cluster, **kw):
     log.info("Running test")
     log.info("Running ceph upgrade test")
     config = kw.get("config")
-    paths = config.get("paths").split(" ")
-    install_version = paths[0]
-    upgrade_versions = paths[1:]
+    paths = config.get("paths")
+    versions = list(paths)
+    install_version = versions[0]
+    upgrade_versions = versions[1:]
     ceph_cluster_dict = kw.get("ceph_cluster_dict")
 
     for cluster_name, cluster in ceph_cluster_dict.items():
 
-        if install_version.startswith("5."):
+        if install_version >= 5.0:
             config["steps"] = config["suite_setup"]["steps"]
             rc = test_cephadm.run(
                 ceph_cluster=ceph_cluster_dict[cluster_name],
@@ -125,16 +143,16 @@ def run(ceph_cluster, **kw):
                 return rc
         else:
             is_ceph_conf_present = (
-                True if config["suite_setup"].get("ceph_origin") else False
+                True if config.get("paths").get(install_version).get("config").get("ceph_origin") else False
             )
             is_repo_present = True if config.get("container_image") else False
-            config = get_ansible_conf(
-                config, install_version, is_ceph_conf_present, is_repo_present
+            install_config = get_ansible_conf(
+                config, install_version, False, is_ceph_conf_present
             )
             rc = test_ansible.run(
                 ceph_cluster=ceph_cluster_dict[cluster_name],
                 ceph_nodes=ceph_cluster_dict[cluster_name],
-                config=config,
+                config=install_config,
                 test_data=kw.get("test_data"),
                 ceph_cluster_dict=ceph_cluster_dict,
                 clients=kw.get("clients"),
@@ -143,54 +161,60 @@ def run(ceph_cluster, **kw):
                 return rc
 
         for version in upgrade_versions:
-            index = upgrade_versions.index(version)
-            prev_version = upgrade_versions[index - 1] if index > 0 else install_version
-            if version.startswith("5.") and prev_version.startswith("5."):
-                config = get_cephadm_upgrade_config(config, version)
-                rc = test_cephadm_upgrade.run(
-                    ceph_cluster=ceph_cluster_dict[cluster_name],
-                    ceph_nodes=ceph_cluster_dict[cluster_name],
-                    config=config,
-                    test_data=kw.get("test_data"),
-                    ceph_cluster_dict=ceph_cluster_dict,
-                    clients=kw.get("clients"),
-                )
-                if rc != 0:
-                    return rc
-            elif version.startswith("5.") and prev_version.startswith("4."):
-                config = get_ansible_conf(config, version, False, False)
-                if not ceph_cluster.containerized:
-                    rc = switch_rpm_to_container.run(
-                        ceph_cluster=ceph_cluster_dict[cluster_name],
-                        ceph_nodes=ceph_cluster_dict[cluster_name],
-                        config=config,
-                        test_data=kw.get("test_data"),
-                        ceph_cluster_dict=ceph_cluster_dict,
-                        clients=kw.get("clients"),
-                    )
-                    if rc != 0:
-                        return rc
-                    config["ansi_config"]["containerized_deployment"] = True
-                rc = test_ansible_upgrade.run(
-                    ceph_cluster=ceph_cluster_dict[cluster_name],
-                    ceph_nodes=ceph_cluster_dict[cluster_name],
-                    config=config,
-                    test_data=kw.get("test_data"),
-                    ceph_cluster_dict=ceph_cluster_dict,
-                    clients=kw.get("clients"),
-                )
-                if rc != 0:
-                    return rc
-            else:
-                config = get_ansible_conf(config, version, False, False)
-                rc = test_ansible_upgrade.run(
-                    ceph_cluster=ceph_cluster_dict[cluster_name],
-                    ceph_nodes=ceph_cluster_dict[cluster_name],
-                    config=config,
-                    test_data=kw.get("test_data"),
-                    ceph_cluster_dict=ceph_cluster_dict,
-                    clients=kw.get("clients"),
-                )
-                if rc != 0:
-                    return rc
+            upgrade_steps = paths[version]['upgrade_steps']
+            for steps in upgrade_steps:
+                if upgrade_steps[steps]['command'] == 'upgrade_all':
+                    index = upgrade_versions.index(version)
+                    prev_version = upgrade_versions[index - 1] if index > 0 else install_version
+                    if version >= 5.0 and prev_version >= 5.0:
+                        if config.get("paths").get(install_version).get("config"):
+                            config = config.get("paths").get(install_version).get("config")
+                        else:
+                            config = get_cephadm_upgrade_config(config, version)
+                        rc = test_cephadm_upgrade.run(
+                            ceph_cluster=ceph_cluster_dict[cluster_name],
+                            ceph_nodes=ceph_cluster_dict[cluster_name],
+                            config=config,
+                            test_data=kw.get("test_data"),
+                            ceph_cluster_dict=ceph_cluster_dict,
+                            clients=kw.get("clients"),
+                        )
+                        if rc != 0:
+                            return rc
+                    elif version >= 5.0 and 4.0 <= prev_version <= 5.0:
+                        upgrade_config = get_ansible_conf(config, version, False, False)
+                        if not ceph_cluster.containerized:
+                            rc = switch_rpm_to_container.run(
+                                ceph_cluster=ceph_cluster_dict[cluster_name],
+                                ceph_nodes=ceph_cluster_dict[cluster_name],
+                                config=upgrade_config,
+                                test_data=kw.get("test_data"),
+                                ceph_cluster_dict=ceph_cluster_dict,
+                                clients=kw.get("clients"),
+                            )
+                            if rc != 0:
+                                return rc
+                            upgrade_config["ansi_config"]["containerized_deployment"] = True
+                        rc = test_ansible_upgrade.run(
+                            ceph_cluster=ceph_cluster_dict[cluster_name],
+                            ceph_nodes=ceph_cluster_dict[cluster_name],
+                            config=upgrade_config,
+                            test_data=kw.get("test_data"),
+                            ceph_cluster_dict=ceph_cluster_dict,
+                            clients=kw.get("clients"),
+                        )
+                        if rc != 0:
+                            return rc
+                    else:
+                        upgrade_config = get_ansible_conf(config, version, False, False)
+                        rc = test_ansible_upgrade.run(
+                            ceph_cluster=ceph_cluster_dict[cluster_name],
+                            ceph_nodes=ceph_cluster_dict[cluster_name],
+                            config=upgrade_config,
+                            test_data=kw.get("test_data"),
+                            ceph_cluster_dict=ceph_cluster_dict,
+                            clients=kw.get("clients"),
+                        )
+                        if rc != 0:
+                            return rc
     return 0
