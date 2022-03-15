@@ -77,6 +77,7 @@ tests:
                 registry.redhat.io/openshift4/ose-prometheus:v4.9.0-202110182323.p0.git.3197fa7.assembly.stream
               mgr/cephadm/container_image_node_exporter:
                 openshift4/ose-prometheus-node-exporter:v4.6.0-202107070256.p0.git.c63b8f3
+              mgr/cephadm/ibm: true
       destroy-cluster: false
       abort-on-fail: true
   - test:

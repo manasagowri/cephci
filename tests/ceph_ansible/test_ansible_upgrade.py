@@ -154,6 +154,11 @@ def run(ceph_cluster, **kw):
             matched_short_names = ",".join(short_names)
         cmd += f" --limit {matched_short_names}"
 
+    extra_vars = config.get("extra_vars")
+    if extra_vars:
+        for k, v in extra_vars.items():
+            cmd += f" -e '{k}={v}'"
+
     out, rc = ceph_installer.exec_command(cmd=cmd, long_running=True)
 
     if rc != 0:

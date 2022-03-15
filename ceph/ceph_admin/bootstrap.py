@@ -297,6 +297,11 @@ class BootstrapMixin:
         # Check for image overrides
         if self.config.get("overrides"):
             override_dict = dict(item.split("=") for item in self.config["overrides"])
+            if override_dict.get("ibm"):
+                cmd = "cephadm shell --"
+                cmd += f" ceph config set mgr mgr/cephadm/ibm {override_dict['ibm']} --force"
+                self.installer.exec_command(sudo=True, cmd=cmd)
+
             supported_overrides = [
                 "grafana",
                 "keepalived",

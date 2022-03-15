@@ -110,6 +110,8 @@ tests:
          module: test_ansible_upgrade.py
          config:
            build: '5.x'
+           extra_vars:
+             qe_testing: true
            ansi_config:
              ceph_origin: distro
              ceph_repository: rhcs

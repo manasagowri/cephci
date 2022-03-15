@@ -39,6 +39,9 @@ tests:
           initial-dashboard-user: admin123
           initial-dashboard-password: admin123
           fsid: f64f341c-655d-11eb-8778-fa163e914bcc
+          config:
+            mgr:
+              mgr/cephadm/ibm: true
       destroy-cluster: false
       abort-on-fail: true
   - test:

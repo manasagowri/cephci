@@ -122,6 +122,8 @@ tests:
                grafana_container_image: registry.redhat.io/rhceph/rhceph-5-dashboard-rhel8:5
                prometheus_container_image: registry.redhat.io/openshift4/ose-prometheus:v4.6
                alertmanager_container_image: registry.redhat.io/openshift4/ose-prometheus-alertmanager:v4.6
+             extra_vars:
+               qe_testing: true
            desc: Test Ceph-Ansible rolling update 4.x cdn -> 5.x latest -> cephadm adopt
            abort-on-fail: True
      desc: Running upgrade and i/o's parallelly
