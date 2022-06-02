@@ -2330,15 +2330,25 @@ class CephInstaller(CephObject):
             "5": {"8": "ansible-2.9-for-rhel-8-x86_64-rpms"},
         }
 
+        logger.info(f"ansible_rpm : {ansible_rpm}")
+
         if self.pkg_type == "deb":
             self.exec_command(sudo=True, cmd="apt-get install -y ceph-ansible")
         else:
             distro_ver = self.distro_info["VERSION_ID"].split(".")[0]
             rhcs_ver = rhbuild.split(".")[0]
+            logger.info(f"rhcs_ver : {rhcs_ver}")
+            logger.info(f"rhbuild : {rhbuild}")
             # Use ansible 2.8 for rhcs 4.1.z
             if str(rhbuild).startswith("4.1"):
                 ansible_rpm[rhcs_ver]["7"] = "rhel-7-server-ansible-2.8-rpms"
                 ansible_rpm[rhcs_ver]["8"] = "ansible-2.8-for-rhel-8-x86_64-rpms"
+
+            # Use ansible 2.10 for rhcs 5.2
+            if str(rhbuild).startswith("5.2"):
+                logger.info("Inside if")
+                ansible_rpm[rhcs_ver]["8"] = "ansible-2.10-for-rhel-8-x86_64-rpms"
+            logger.info(f"ansible_rpm : {ansible_rpm}")
 
             try:
                 rpm = ansible_rpm[rhcs_ver][distro_ver]
