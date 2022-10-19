@@ -70,6 +70,7 @@ A simple test suite wrapper that executes tests based on yaml test configuration
         [--add-repo <repo>]
         [--kernel-repo <repo>]
         [--store | --reuse <file>]
+        [--store-file <file>]
         [--skip-cluster]
         [--skip-subscription]
         [--docker-registry <registry>]
@@ -123,6 +124,7 @@ Options:
   --kernel-repo <repo>              Zstream Kernel Repo location
   --store                           store the current vm state for reuse
   --reuse <file>                    use the stored vm state for rerun
+  --store-file <file>               location to store current vm state
   --skip-cluster                    skip cluster creation from ansible/ceph-deploy
   --skip-subscription               skip subscription manager if using beta rhel images
   --docker-registry <registry>      Docker registry, default value is taken from ansible
@@ -454,7 +456,14 @@ def run(args):
             build, rhbuild, platform, args.get("--upstream-build", None)
         )
 
+    instances_name = args.get("--instances-name")
+    if instances_name:
+        instances_name = instances_name.replace(".", "-")
+
     store = args.get("--store") or False
+    ceph_clusters_file = args.get("--store-file") or f"rerun/{instances_name}-{run_id}"
+
+    log.info(f"ceph_clusters_file: {ceph_clusters_file}")
 
     base_url = args.get("--rhs-ceph-repo") or base_url
     ubuntu_repo = args.get("--ubuntu-repo") or ubuntu_repo
@@ -468,10 +477,6 @@ def run(args):
     post_results = args.get("--post-results")
     skip_setup = args.get("--skip-cluster")
     skip_subscription = args.get("--skip-subscription")
-
-    instances_name = args.get("--instances-name")
-    if instances_name:
-        instances_name = instances_name.replace(".", "-")
 
     osp_image = args.get("--osp-image")
     filestore = args.get("--filestore")
@@ -704,7 +709,6 @@ def run(args):
             for node in cluster:
                 node.reconnect()
     if store:
-        ceph_clusters_file = f"rerun/{instances_name}-{run_id}"
         if not os.path.exists(os.path.dirname(ceph_clusters_file)):
             os.makedirs(os.path.dirname(ceph_clusters_file))
         store_cluster_state(ceph_cluster_dict, ceph_clusters_file)
