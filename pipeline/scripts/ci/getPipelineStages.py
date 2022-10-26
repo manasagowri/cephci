@@ -117,6 +117,11 @@ def fetch_stages(args):
         overrides.pop("workspace", None)
         overrides.pop("build_number", None)
         script.update({"inventory": script["inventory"][cloud_type]})
+
+        if "skip-subscription" in overrides:
+            script.update({"add-repo": script["add-repo"][cloud_type]})
+        else:
+            script.pop("add-repo")
         script.update(overrides)
 
         for (k, v) in script.items():
