@@ -312,12 +312,15 @@ def enable_rhel_rpms(ceph, distro_ver):
         "9": ["rhel-9-for-x86_64-appstream-rpms", "rhel-9-for-x86_64-baseos-rpms"],
     }
 
+    req_repos = []
     for repo in repos.get(distro_ver[0]):
         ceph.exec_command(
             sudo=True,
             cmd="subscription-manager repos --enable={r}".format(r=repo),
             long_running=True,
         )
+        req_repos.append(repo)
+    return req_repos
 
 
 def enable_rhel_eus_rpms(ceph, distro_ver, cloud_type="openstack"):

@@ -1127,4 +1127,46 @@ def getBuildUser() {
     ]
 }
 
+def setupMirroredRepo(
+    def cliArgs,
+    def cleanup_on_success=true,
+    def cleanup_on_failure=true
+) {
+    /*
+        This method executes a single test suite and also performs cleanup of the VM.
+
+        Args:
+            cliArgs - argument to be passed to run.py
+    */
+    def rc = "PASS"
+
+    def randString = sh(
+            script: "cat /dev/urandom | tr -cd 'a-z0-9' | head -c 5",
+            returnStdout: true
+        ).trim()
+    def instance_name = "mirror_repo-${randString}"
+
+    def baseCmd = "echo pwd; cd pipeline/scripts/ci; echo pwd; ${env.WORKSPACE}/.venv/bin/python setup_mirrored_repo.py --log-level DEBUG"
+    baseCmd += " --osp-cred ${env.HOME}/osp-cred-ci-2.yaml"
+
+    try {
+        sh (script: "${baseCmd} --instances-name ${instance_name} ${cliArgs}")
+    } catch (err) {
+        rc = "FAIL"
+        println err
+        currentBuild.result = 'FAILURE'
+    } finally {
+        if ((cleanup_on_success && cleanup_on_failure) ||
+            (cleanup_on_success && rc == 'PASS') ||
+            (cleanup_on_failure && rc == 'FAIL'))
+        {
+            sh(script: "${baseCmd} --cleanup ${vmPrefix}")
+        } else {
+            println "Not performing cleanup of cluster."
+        }
+    }
+
+    return [ "result": rc, "instances-name": instance_name]
+}
+
 return this;

@@ -1,0 +1,9 @@
+# Deploy single node with ci.m1.large spec to download rhel repos for creating mirrored repos
+globals:
+  - ceph-cluster:
+      name: ceph
+      node1:
+        role:
+          - _admin
+        no-of-volumes: 3
+        disk-size: 20
