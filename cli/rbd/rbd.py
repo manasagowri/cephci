@@ -10,6 +10,7 @@ from .image_meta import Image_meta
 from .mirror.mirror import Mirror
 from .pool import Pool
 from .snap import Snap
+from .trash.trash import Trash
 
 
 class Rbd(Cli):
@@ -23,6 +24,7 @@ class Rbd(Cli):
         self.feature = Feature(nodes, self.base_cmd)
         self.image_meta = Image_meta(nodes, self.base_cmd)
         self.config = Config(nodes, self.base_cmd)
+        self.trash = Trash(nodes, self.base_cmd)
 
     def create(self, **kw):
         """
