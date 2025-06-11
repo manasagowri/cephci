@@ -2,10 +2,10 @@
 # 1 GW group with 4 GWs and 5 subsystems with 10 namespaces each. 5 initiator nodes
 # Test conf at conf/squid/nvmeof/ceph_nvmeof_ns-masking-5_client.yaml
 tests:
-  - test:
-      abort-on-fail: true
-      module: install_prereq.py
-      name: install ceph pre-requisites
+  # - test:
+  #     abort-on-fail: true
+  #     module: install_prereq.py
+  #     name: install ceph pre-requisites
   - test:
       abort-on-fail: true
       config:
@@ -161,7 +161,7 @@ tests:
               command: add
               args:
                 subsystems: 5
-                namespaces: 50
+                namespaces: 10
                 pool: rbd
                 image_size: 1T
                 no-auto-visible: true
@@ -171,7 +171,7 @@ tests:
               command: add_host
               args:
                 subsystems: 5
-                namespaces: 50
+                namespaces: 10
                 initiators:
                   - node8
                   - node9
@@ -184,7 +184,7 @@ tests:
               command: del_host
               args:
                 subsystems: 5
-                namespaces: 50
+                namespaces: 10
                 initiators:
                   - node8
                   - node9
@@ -197,7 +197,7 @@ tests:
               command: change_visibility
               args:
                 subsystems: 5
-                namespaces: 50
+                namespaces: 10
                 auto-visible: 'yes'
                 group: group1
                 validate_ns_masking_initiators: true
@@ -205,7 +205,7 @@ tests:
               command: change_visibility
               args:
                 subsystems: 5
-                namespaces: 50
+                namespaces: 10
                 auto-visible: 'no'
                 group: group1
                 validate_ns_masking_initiators: true

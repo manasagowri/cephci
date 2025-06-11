@@ -8,6 +8,7 @@ Over here, we create a glue between the CLI and CephCI to allow the QE to write 
 scenarios for verifying and validating cephadm.
 """
 
+import pdb
 from typing import Dict
 
 from cli.utilities.configure import setup_ibm_licence
@@ -122,11 +123,13 @@ class CephAdmin(BootstrapMixin, ShellMixin, RegistryLoginMixin):
         elif repo:
             base_url = repo
             cmd = f"yum-config-manager --add-repo {base_url}"
+            pdb.set_trace()
             for node in self.cluster.get_nodes():
                 node.exec_command(sudo=True, cmd=cmd)
 
         elif base_url.endswith(".repo"):
             cmd = f"yum-config-manager --add-repo {base_url}"
+            pdb.set_trace()
             for node in self.cluster.get_nodes():
                 node.exec_command(sudo=True, cmd=cmd)
         else:
@@ -137,6 +140,7 @@ class CephAdmin(BootstrapMixin, ShellMixin, RegistryLoginMixin):
             else:
                 base_url += "compose/Tools/x86_64/os/"
             cmd = f"yum-config-manager --add-repo {base_url}"
+            pdb.set_trace()
             for node in self.cluster.get_nodes():
                 node.exec_command(sudo=True, cmd=cmd)
 

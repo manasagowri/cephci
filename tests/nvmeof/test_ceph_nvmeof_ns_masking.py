@@ -1,5 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 import json
 from copy import deepcopy
+import pdb
+import time
 
 from ceph.ceph import Ceph
 from ceph.nvmegw_cli import NVMeGWCLI
@@ -14,6 +17,7 @@ LOG = Log(__name__)
 
 
 def add_namespaces(config, command, init_nodes, hostnqn_dict, rbd_obj, ha):
+    pdb.set_trace()
     subsystems = config["args"].pop("subsystems")
     namespaces = config["args"].pop("namespaces")
     image_size = config["args"].pop("image_size")
@@ -26,6 +30,7 @@ def add_namespaces(config, command, init_nodes, hostnqn_dict, rbd_obj, ha):
     subnqn_template = "nqn.2016-06.io.spdk:cnode{}"
     expected_visibility = "False" if no_auto_visible else "True"
     nvmegwcli = ha.gateways[0]
+    rbd_images_subsys = []
 
     for sub_num in range(1, subsystems + 1):
         subnqn = f"{subnqn_template.format(sub_num)}{f'.{group}' if group else ''}"
@@ -73,11 +78,18 @@ def add_namespaces(config, command, init_nodes, hostnqn_dict, rbd_obj, ha):
                 command,
                 expected_visibility,
             )
+            # pdb.set_trace()
+            rbd_images_subsys.append(f"{subnqn}|{pool}|{name}-image{num}")
+    # pdb.set_trace()
     if validate_initiators:
         ha.validate_init_namespace_masking(command, init_nodes, expected_visibility)
+    pdb.set_trace()
+    if expected_visibility:
+        ha.validate_io(rbd_images_subsys)
+    return rbd_images_subsys
 
 
-def add_host(config, command, init_nodes, hostnqn_dict, ha):
+def add_host(config, command, init_nodes, hostnqn_dict, ha, rbd_images_subsys):
     """Add host NQN to namespaces"""
     subsystems = config["args"].pop("subsystems")
     namespaces = config["args"].pop("namespaces")
@@ -152,7 +164,7 @@ def add_host(config, command, init_nodes, hostnqn_dict, ha):
                 )
 
 
-def del_host(config, command, init_nodes, hostnqn_dict, ha):
+def del_host(config, command, init_nodes, hostnqn_dict, ha, rbd_images_subsys):
     """Delete host NQN to namespaces"""
     subsystems = config["args"].pop("subsystems")
     namespaces = config["args"].pop("namespaces")
@@ -227,7 +239,7 @@ def del_host(config, command, init_nodes, hostnqn_dict, ha):
                 )
 
 
-def change_visibility(config, command, init_nodes, hostnqn_dict, ha):
+def change_visibility(config, command, init_nodes, hostnqn_dict, ha, rbd_images_subsys):
     """Change visibility of namespaces."""
     subsystems = config["args"].pop("subsystems")
     namespaces = config["args"].pop("namespaces")
@@ -324,13 +336,15 @@ def run(ceph_cluster: Ceph, **kwargs) -> int:
             command = cfg.pop("command")
 
             if command == "add":
-                add_namespaces(cfg, command, init_nodes, hostnqn_dict, rbd_obj, ha)
+                pdb.set_trace()
+                rbd_images_subsys = add_namespaces(cfg, command, init_nodes, hostnqn_dict, rbd_obj, ha)
+            pdb.set_trace()
             if command == "add_host":
-                add_host(cfg, command, init_nodes, hostnqn_dict, ha)
+                add_host(cfg, command, init_nodes, hostnqn_dict, ha, rbd_images_subsys)
             if command == "del_host":
-                del_host(cfg, command, init_nodes, hostnqn_dict, ha)
+                del_host(cfg, command, init_nodes, hostnqn_dict, ha, rbd_images_subsys)
             if command == "change_visibility":
-                change_visibility(cfg, command, init_nodes, hostnqn_dict, ha)
+                change_visibility(cfg, command, init_nodes, hostnqn_dict, ha, rbd_images_subsys)
 
     except BaseException as be:
         LOG.error(be, exc_info=True)

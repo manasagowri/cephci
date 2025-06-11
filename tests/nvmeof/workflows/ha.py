@@ -885,7 +885,7 @@ class HighAvailability:
         LOG.info("All namespaces are listed at Client(s)")
         return True
 
-    def prepare_io_execution(self, io_clients):
+    def prepare_io_execution(self, io_clients, return_clients=False):
         """Prepare FIO Execution.
 
         initiators:                             # Configure Initiators with all pre-req
@@ -901,6 +901,8 @@ class HighAvailability:
             client.connect_targets(io_client)
             if client not in self.clients:
                 self.clients.append(client)
+        if return_clients:
+            return self.clients
 
     def fetch_namespaces(self, gateway, failed_ana_grp_ids=[], get_list=False):
         """Fetch all namespaces for failed gateways.
@@ -1002,6 +1004,12 @@ class HighAvailability:
         validate_config=None,
     ):
         """Validate that the namespace visibility is correct from all initiators."""
+        io_tasks = []
+        initiators = self.prepare_io_execution(init_nodes)
+        executor = ThreadPoolExecutor()
+        for initiator in initiators:
+            io_tasks.append(executor.submit(initiator.start_fio))
+        time.sleep(20)  # time sleep for IO to Kick-in
         for node in init_nodes:
             initiator_node = get_node_by_id(self.cluster, node)
             client = NVMeInitiator(initiator_node, self.gateways[0])
