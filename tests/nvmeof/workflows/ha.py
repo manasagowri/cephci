@@ -3,6 +3,7 @@ NVMe High Availability Module.
 """
 
 import json
+import pdb
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -532,6 +533,7 @@ class HighAvailability:
         )
         self.config["gw_nodes"] = gwnodes_to_be_deployed
         deploy_nvme_service(self.cluster, self.config)
+        # pdb.set_trace()
 
         self.gateways = []
         for gateway in self.config["gw_nodes"]:
@@ -678,6 +680,7 @@ class HighAvailability:
         gwnodes_to_be_deployed = list(set(self.config["gw_nodes"] + scaleup_nodes))
         self.config["gw_nodes"] = gwnodes_to_be_deployed
         deploy_nvme_service(self.cluster, self.config)
+        # pdb.set_trace()
 
         self.gateways = []
         for gateway in gwnodes_to_be_deployed:

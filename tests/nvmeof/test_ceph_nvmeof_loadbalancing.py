@@ -5,6 +5,7 @@ Test suite that verifies the deployment of Ceph NVMeoF Gateway HA
 """
 
 import json
+import pdb
 import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -18,21 +19,32 @@ from tests.nvmeof.workflows.ha import HighAvailability
 from tests.nvmeof.workflows.nvme_utils import delete_nvme_service, deploy_nvme_service
 from tests.rbd.rbd_utils import initial_rbd_config
 from utility.log import Log
+from utility.retry import retry
 from utility.utils import generate_unique_id
 
 LOG = Log(__name__)
 
 
-def configure_listeners(ha_obj, nodes, config):
+def configure_listeners(ha_obj, nodes, config, ceph_cluster=None, gw_node=None):
     """Configure Listeners on subsystem."""
+    # pdb.set_trace()
     lb_group_ids = {}
+    if gw_node:
+        # pdb.set_trace()
+        nvmegwcli = ha_obj.check_gateway(gw_node.node.id)
     for node in nodes:
-        nvmegwcli = ha_obj.check_gateway(node)
-        hostname = nvmegwcli.fetch_gateway_hostname()
+        if not gw_node:
+            nvmegwcli = ha_obj.check_gateway(node)
+            hostname = nvmegwcli.fetch_gateway_hostname()
+            ip_address = nvmegwcli.node.ip_address
+        else:
+            node = get_node_by_id(ceph_cluster, node)
+            hostname = node.hostname
+            ip_address = node.ip_address
         listener_config = {
             "args": {
                 "subsystem": config["nqn"],
-                "traddr": nvmegwcli.node.ip_address,
+                "traddr": ip_address,
                 "trsvcid": config["listener_port"],
                 "host-name": hostname,
             }
@@ -168,6 +180,23 @@ def parse_namespaces(config, namespaces):
             all_namespaces.append(f"{sub_name}|{ns_info}")
     return all_namespaces
 
+@retry(IOError, tries=3, delay=20)
+def connect_initiator_and_verify(namespaces, initiators, ha, ceph_cluster=None):
+    """Connect Initiator and verify namespaces."""
+    try:
+        if ceph_cluster:
+            for initiator_cfg in initiators:
+                disconnect_initiator(ceph_cluster, initiator_cfg["node"])
+        ha.prepare_io_execution(initiators)
+
+        # Check for targets at clients
+        ha.compare_client_namespace([i["uuid"] for i in namespaces])
+    except IOError as err:
+        LOG.error(f"Failed to connect initiator and verify namespaces: {err}")
+        raise IOError(
+            f"Failed to connect initiator and verify namespaces: {err}"
+        ) from err
+
 
 def test_ceph_83608838(ceph_cluster, config):
     rbd_pool = config["rbd_pool"]
@@ -298,6 +327,7 @@ def run(ceph_cluster: Ceph, **kwargs) -> int:
     initiators = config.get("initiators")
     io_tasks = []
     # Set max_workers to accommodate all FIO processes per initiator
+    # pdb.set_trace()
     num_devices = sum(
         [(i.get("bdevs", [])[0].get("count", 0)) for i in config.get("subsystems", [])]
     )
@@ -332,6 +362,7 @@ def run(ceph_cluster: Ceph, **kwargs) -> int:
             if config.get("install"):
                 deploy_nvme_service(ceph_cluster, config)
 
+            # pdb.set_trace()
             ha = HighAvailability(ceph_cluster, config["gw_nodes"], **config)
             gw_nodes = ha.gateways
 
@@ -380,16 +411,18 @@ def run(ceph_cluster: Ceph, **kwargs) -> int:
                             ha.validate_auto_loadbalance()
 
                     # Scale down
+                    # pdb.set_trace()
                     if lb_config.get("scale_down"):
                         gateway_nodes_to_be_deployed = lb_config["scale_down"]
                         LOG.info(f"Started scaling down {gateway_nodes_to_be_deployed}")
 
                         # Prepare FIO Execution
                         namespaces = ha.fetch_namespaces(ha.gateways[0])
-                        ha.prepare_io_execution(initiators)
+                        # ha.prepare_io_execution(initiators)
 
-                        # Check for targets at clients
-                        ha.compare_client_namespace([i["uuid"] for i in namespaces])
+                        # # Check for targets at clients
+                        # ha.compare_client_namespace([i["uuid"] for i in namespaces])
+                        connect_initiator_and_verify(namespaces, initiators, ha)
 
                         # Start IO Execution
                         LOG.info("Initiating IO before scale down")
@@ -406,8 +439,12 @@ def run(ceph_cluster: Ceph, **kwargs) -> int:
                         LOG.info(f"Started scaling up {scaleup_nodes}")
 
                         # Prepare FIO execution for existing namespaces
-                        old_namespaces = ha.fetch_namespaces(ha.gateways[0])
-                        ha.prepare_io_execution(initiators)
+                        old_namespaces_obj = ha.fetch_namespaces(ha.gateways[0])
+                        # ha.prepare_io_execution(initiators)
+
+                        # # Check for targets at clients
+                        # ha.compare_client_namespace([i["uuid"] for i in namespaces])
+                        connect_initiator_and_verify(old_namespaces_obj, initiators, ha)
 
                         # Start IO Execution into already existing namespaces/nodes
                         LOG.info("Initiating IO before scale up ")
@@ -420,16 +457,28 @@ def run(ceph_cluster: Ceph, **kwargs) -> int:
                             [node in set(gateway_nodes) for node in scaleup_nodes]
                         ):
                             # Perform scale up
-                            old_namespaces = parse_namespaces(config, old_namespaces)
-                            ha.scale_up(scaleup_nodes, gw_nodes, old_namespaces)
+                            old_namespaces = parse_namespaces(config, old_namespaces_obj)
 
+                            # pdb.set_trace()
                             # Add listeners and namespaces to newly added GWs
+                            ha.scale_up(scaleup_nodes, gw_nodes, old_namespaces)
                             LOG.info(f"Adding listeners for {scaleup_nodes}")
                             for subsys_args in config["subsystems"]:
                                 sub_args = {"subsystem": subsys_args["nqn"]}
                                 lb_groups = configure_listeners(
-                                    ha, scaleup_nodes, subsys_args
+                                    ha, scaleup_nodes, subsys_args, ceph_cluster, gw_node=ha.gateways[-1]
                                 )
+
+                            # ha.scale_up(scaleup_nodes, gw_nodes, old_namespaces)
+                            LOG.info("Waiting for 120 seconds for scale up to complete")
+                            time.sleep(120)  # wait for gateway to be initialized
+                            # ha.prepare_io_execution(initiators)
+                            # pdb.set_trace()
+                            # ha.compare_client_namespace(
+                            #     [i["uuid"] for i in old_namespaces_obj]
+                            # )  # Check for targets at clients
+                            connect_initiator_and_verify(old_namespaces_obj, initiators, ha, ceph_cluster)
+
 
                             # Create new namespaces to newly added GWs that will take ANA_GRP of new GWs
                             LOG.info(f"Adding namespaces for {scaleup_nodes}")
@@ -445,13 +494,14 @@ def run(ceph_cluster: Ceph, **kwargs) -> int:
                                 )
 
                             # Prepare FIO Execution for new namespaces
-                            ha.prepare_io_execution(initiators)
+                            # ha.prepare_io_execution(initiators)
                             new_namespaces = ha.fetch_namespaces(ha.gateways[-1])
 
-                            # Check for targets at clients for new namespaces
-                            ha.compare_client_namespace(
-                                [i["uuid"] for i in new_namespaces]
-                            )
+                            # # Check for targets at clients for new namespaces
+                            # ha.compare_client_namespace(
+                            #     [i["uuid"] for i in new_namespaces]
+                            # )
+                            connect_initiator_and_verify(new_namespaces, initiators, ha, ceph_cluster)
 
                             # Start IO Execution for new namespaces
                             for initiator in ha.clients:
