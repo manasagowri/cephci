@@ -5,6 +5,7 @@ Test suite that verifies the deployment of Ceph NVMeoF Gateway HA
 """
 
 import json
+import pdb
 import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -552,6 +553,9 @@ def run(ceph_cluster: Ceph, **kwargs) -> int:
 
                     # Scale up
                     if lb_config.get("scale_up"):
+                        # pdb.set_trace()
+                        LOG.info("Waiting for 10 minutes before scale up")
+                        time.sleep(600)  # wait for 10 minutes before scale up
                         scaleup_nodes = lb_config["scale_up"]
                         gateway_nodes = config["gw_nodes"]
                         LOG.info(f"Started scaling up {scaleup_nodes}")
@@ -581,6 +585,13 @@ def run(ceph_cluster: Ceph, **kwargs) -> int:
                                 lb_groups = configure_listeners(
                                     ha, scaleup_nodes, subsys_args
                                 )
+
+                            LOG.info(f"Validating namespaces post scaleup for {scaleup_nodes}")
+                            ha.prepare_io_execution(initiators)
+                            # Check for targets at clients for new namespaces
+                            ha.compare_client_namespace(
+                                [i["uuid"] for i in new_namespaces]
+                            )
 
                             # Create new namespaces to newly added GWs that will take ANA_GRP of new GWs
                             LOG.info(f"Adding namespaces for {scaleup_nodes}")

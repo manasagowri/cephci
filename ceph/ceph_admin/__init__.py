@@ -249,7 +249,8 @@ class CephAdmin(BootstrapMixin, ShellMixin, RegistryLoginMixin):
         :Note: At present, they are prefixed with -- hence use long options
 
         """
-        cmd = "yum install cephadm -y"
+        # cmd = "yum install cephadm -y"
+        cmd = "yum install https://public.dhe.ibm.com/ibmdl/export/pub/storage/ceph/8/rhel9/x86_64/cephadm-19.2.0-139.el9cp.noarch.rpm -y"
 
         if kwargs.get("nogpgcheck", True):
             cmd += " --nogpgcheck"
