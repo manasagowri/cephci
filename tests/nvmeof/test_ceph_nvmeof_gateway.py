@@ -12,6 +12,7 @@ from ceph.nvmegw_cli import NVMeGWCLI
 from ceph.nvmeof.initiator import Initiator
 from ceph.parallel import parallel
 from ceph.utils import get_node_by_id
+from tests.nvmeof.workflows.nvme import NVMeService
 from tests.nvmeof.workflows.nvme_utils import delete_nvme_service, deploy_nvme_service
 from tests.rbd.rbd_utils import initial_rbd_config
 from utility.log import Log
@@ -281,8 +282,16 @@ def run(ceph_cluster: Ceph, **kwargs) -> int:
     """
     LOG.info("Starting Ceph Ceph NVMEoF deployment.")
     config = kwargs["config"]
-    rbd_pool = config["rbd_pool"]
-    rbd_obj = initial_rbd_config(**kwargs)["rbd_reppool"]
+    rbd_pool = config.get("rbd_pool")
+    pools = list(
+        set([cfg.get("rbd_pool", rbd_pool) for cfg in config.get("gw_groups", [])])
+    )
+    rbd_obj = []
+    for pool in pools:
+        kwargs["config"]["rep_pool_config"] = {
+            "pool": pool,
+        }
+        rbd_obj.append(initial_rbd_config(**kwargs)["rbd_reppool"])
 
     overrides = kwargs.get("test_data", {}).get("custom-config")
     for key, value in dict(item.split("=") for item in overrides).items():
@@ -290,43 +299,48 @@ def run(ceph_cluster: Ceph, **kwargs) -> int:
             NVMeGWCLI.NVMEOF_CLI_IMAGE = value
             break
 
-    gw_node = get_node_by_id(ceph_cluster, config["gw_node"])
-    gw_port = config.get("gw_port", 5500)
-    nvmegwcli = NVMeGWCLI(gw_node, gw_port)
-
+    nvme = NVMeService(ceph_cluster, config)
     if config.get("cleanup-only"):
-        teardown(ceph_cluster, rbd_obj, nvmegwcli, config)
+        nvme.teardown(ceph_cluster, rbd_obj, config)
         return 0
 
     try:
         if config.get("install"):
-            deploy_nvme_service(ceph_cluster, config)
-
-        if config.get("subsystems"):
-            with parallel() as p:
-                for subsys_args in config["subsystems"]:
-                    p.spawn(
-                        configure_subsystems,
-                        ceph_cluster,
-                        rbd_obj,
-                        rbd_pool,
-                        nvmegwcli,
-                        subsys_args,
-                    )
+            nvme.deploy_service_and_update(config.get("install", False))
 
         if config.get("initiators"):
-            with parallel() as p:
-                for initiator in config["initiators"]:
-                    p.spawn(initiators, ceph_cluster, nvmegwcli, initiator)
-                    if config.get("namespaces"):
-                        for qos_args in config["namespaces"]:
-                            if qos_args["command"] == "set_qos":
-                                p.spawn(nvmegwcli.namespace.set_qos, **qos_args)
+            gw_node_names = []
+            gw_ports = []
+            if config.get("gw_node"):
+                gw_node_names.append(config["gw_node"])
+                gw_ports.append(config.get("gw_port", 5500))
+            elif config.get("gw_groups"):
+                for gwgroup_config in config["gw_groups"]:
+                    if "gw_node" in gwgroup_config:
+                        gw_node_names.append(gwgroup_config["gw_node"])
+                        gw_ports.append(gwgroup_config.get("gw_port", 5500))
+            for gw_node_name, gw_port in zip(gw_node_names, gw_ports):
+                gw_node = get_node_by_id(ceph_cluster, gw_node_name)
+                nvmegwcli = NVMeGWCLI(gw_node, gw_port)
+                with parallel() as p:
+                    for initiator in config["initiators"]:
+                        p.spawn(initiators, ceph_cluster, nvmegwcli, initiator)
+                        if config.get("namespaces"):
+                            for qos_args in config["namespaces"]:
+                                if qos_args["command"] == "set_qos":
+                                    p.spawn(nvmegwcli.namespace.set_qos, **qos_args)
         return 0
     except Exception as err:
         LOG.error(err)
     finally:
         if config.get("cleanup"):
-            teardown(ceph_cluster, rbd_obj, nvmegwcli, config)
+            if not nvme:
+                LOG.error("NVMeService instance is not available for cleanup.")
+                nvme = NVMeService(
+                    ceph_cluster,
+                    config,
+                )
+                # Use the NVMeService instance to handle cleanup
+            nvme.teardown(ceph_cluster, rbd_obj, config)
 
     return 1
