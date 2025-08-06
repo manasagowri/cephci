@@ -123,6 +123,8 @@ tests:
             bdevs:
               count: 1
               size: 10G
+            listeners:
+              - node6
             listener_port: 5001
             allow_host: "*"
         initiators:                             # Configure Initiators with all pre-req
