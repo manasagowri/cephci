@@ -13,9 +13,12 @@ from ceph.parallel import parallel
 from ceph.utils import get_node_by_id, get_nodes_by_ids
 from tests.cephadm import test_nvmeof
 from tests.nvmeof.workflows.nvmegateway import NVMeGateway
+from tests.nvmeof.workflows.utils import string_to_dict
+from utility.log import Log
 from utility.systemctl import SystemCtl
-from utility.utils import generate_unique_id
+from utility.utils import generate_unique_id, log_json_dump
 
+LOG = Log(__name__)
 # Default NVMe RBD pool for ceph_version >= 9.0
 DEFAULT_NVME_RBD_POOL = ".nvme"
 
@@ -433,3 +436,100 @@ class NVMeService:
                 )
             )
         return gateways
+
+    def ana_states(self, gw_group=""):
+        """Fetch ANA states and convert into python dict."""
+
+        orch = Orch(cluster=self.ceph_cluster)
+        out, _ = orch.shell(
+            args=[
+                "ceph",
+                "nvme-gw",
+                "show",
+                self.rbd_pool,
+                repr(self.gateway_group_name),
+            ]
+        )
+        states = {}
+        if self.cluster.rhcs_version >= "8":
+            out = json.loads(out)
+            for gateway in out.get("Created Gateways:"):
+                gw = gateway["gw-id"]
+                states[gw] = gateway
+                states[gw].update(string_to_dict(gateway["ana states"]))
+        else:
+            for data in out.split("}"):
+                data = data.strip()
+                if not data:
+                    continue
+                data = json.loads(f"{data}}}")
+                if data.get("ana states"):
+                    gw = data["gw-id"]
+                    states[gw] = data
+                    states[gw].update(string_to_dict(data["ana states"]))
+
+        return states
+
+    def check_gateway_availability(self, ana_id, state="AVAILABLE", ana_states=None):
+        """Check for failed ANA GW become unavailable.
+
+        Args:
+            ana_id: Gateway ANA group id.
+            state: Gateway availability state
+            ana_states: Overall ana state. (output from self.ana_states)
+        Return:
+            True if Gateway availability is in expected state, else False
+        """
+        # get ANA states
+        if not ana_states:
+            ana_states = self.ana_states()
+
+        # Check Availability of ANA Group Gateway
+        for _, _state in ana_states.items():
+            if _state["anagrp-id"] == ana_id:
+                if _state["Availability"] == state:
+                    return True
+                return False
+        return False
+
+    def fetch_namespaces(self, gateway, failed_ana_grp_ids=[], get_list=False):
+        """Fetch all namespaces for failed gateways.
+
+        Args:
+            gateway: Operational gateway
+            failed_ana_grp_ids: Failed or to-be failed gateway ids
+        Returns:
+            list of namespaces
+        """
+        args = {"base_cmd_args": {"format": "json"}}
+        _, subsystems = gateway.subsystem.list(**args)
+        subsystems = json.loads(subsystems)
+
+        namespaces = []
+        all_ns = []
+        for subsystem in subsystems["subsystems"]:
+            sub_name = subsystem["nqn"]
+            cmd_args = {"args": {"subsystem": subsystem["nqn"]}}
+            _, nspaces = gateway.namespace.list(**{**args, **cmd_args})
+            nspaces = json.loads(nspaces)["namespaces"]
+            all_ns.extend(nspaces)
+
+            if failed_ana_grp_ids:
+                for ns in nspaces:
+                    if ns["load_balancing_group"] in failed_ana_grp_ids:
+                        # <subsystem>|<nsid>|<pool_name>|<image>
+                        ns_info = f"nsid-{ns['nsid']}|{ns['rbd_pool_name']}|{ns['rbd_image_name']}"
+                        if get_list:
+                            namespaces.append(
+                                {"list": ns, "info": f"{sub_name}|{ns_info}"}
+                            )
+                        else:
+                            namespaces.append(f"{sub_name}|{ns_info}")
+        if not failed_ana_grp_ids:
+            LOG.info(f"All namespaces : {log_json_dump(all_ns)}")
+            return all_ns
+
+        LOG.info(
+            f"Namespaces found for ANA-grp-id [{failed_ana_grp_ids}]: {log_json_dump(namespaces)}"
+        )
+        return namespaces

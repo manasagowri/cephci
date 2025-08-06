@@ -1,8 +1,11 @@
 import json
+import time
 
 from ceph.ceph import CommandFailed
+from ceph.ceph_admin.orch import Orch
 from ceph.nvmeof.initiator import Initiator
 from ceph.parallel import parallel
+from ceph.utils import get_node_by_id
 from utility.log import Log
 from utility.retry import retry
 from utility.utils import log_json_dump, run_fio
@@ -19,6 +22,8 @@ class NVMeInitiator(Initiator):
         self.host_key = None
         self.nqn = nqn
         self.auth_mode = ""
+        self.clients = []
+        self.initiators = {}
 
     def fetch_lsblk_nvme_devices_dict(self):
         """Validate all devices at client side.
@@ -178,6 +183,99 @@ class NVMeInitiator(Initiator):
             for op in p:
                 results.append(op)
         return results
+
+    def get_or_create_initiator(self, cluster, node_id, nqn):
+        """Get existing NVMeInitiator or create a new one for each (node_id, nqn)."""
+        key = (node_id, nqn)  # Use both as dictionary key
+
+        if key not in self.initiators:
+            node = get_node_by_id(cluster, node_id)
+            self.initiators[key] = NVMeInitiator(node, self.gateways[0], nqn)
+
+        return self.initiators[key]
+
+    @retry((IOError, TimeoutError, CommandFailed), tries=7, delay=2)
+    def validate_io(self, namespaces, negative=False):
+        """Validate Continuous IO on namespaces.
+
+        - Collect rbd disk usage info for each rbd image.
+        - Validate written bytes value is incremental.
+
+        Args:
+            namespaces: list of namespaces
+        """
+
+        orch = Orch(self.cluster)
+
+        def io_value(ns):
+            sub_ns, pool, image = ns.rsplit("|", 2)
+            count = 3
+            samples = []
+            for _ in range(count):
+                out, _ = orch.shell(
+                    args=[f"rbd --format json du {pool}/{image}"], timeout=600
+                )
+                out = json.loads(out)["images"][0]
+                samples.append(out)
+                time.sleep(6)
+            return sub_ns, f"{pool}/{image}", samples
+
+        def validate_incremetal_io(write_samples):
+            for i in range(len(write_samples) - 1):
+                if write_samples[i] >= write_samples[i + 1]:
+                    return False
+            return True
+
+        with parallel() as p:
+            for namespace in namespaces:
+                p.spawn(io_value, namespace)
+
+            for result in p:
+                subsys, pool_img, samples = result
+                res = [i["used_size"] for i in samples]
+
+                LOG.info(
+                    f"[ {subsys}|{pool_img} ] RBD DU Detailed - {log_json_dump(samples)}"
+                )
+                LOG.info(f"[ {subsys}|{pool_img} ] RBD DU samples - {res}")
+                if not validate_incremetal_io(res):
+                    if negative:
+                        LOG.info(
+                            f"[ {subsys}|{pool_img} ] IO is not progressing as expected - {res}"
+                        )
+                        continue
+                    raise IOError(
+                        f"[ {subsys}|{pool_img} ] IO is not progressing - {res}"
+                    )
+                if negative:
+                    LOG.error(
+                        f"[ {subsys}|{pool_img} ] IO is progressing as expected - {res}"
+                    )
+                    raise IOError(
+                        f"[ {subsys}|{pool_img} ] IO is progressing as expected - {res}"
+                    )
+                LOG.info(f"IO validation for {subsys}|{pool_img} is successful.")
+
+        LOG.info("IO Validation is Successfull on all RBD images..")
+
+    def prepare_io_execution(self, io_clients, return_clients=False):
+        """Prepare FIO Execution.
+
+        initiators:                             # Configure Initiators with all pre-req
+            - nqn: connect-all
+            listener_port: 4420
+            node: node10
+        """
+        for io_client in io_clients:
+            nqn = io_client.get("nqn")
+            if io_client.get("subnqn"):
+                nqn = io_client.get("subnqn")
+            client = self.get_or_create_initiator(io_client["node"], nqn)
+            client.connect_targets(io_client)
+            if client not in self.clients:
+                self.clients.append(client)
+        if return_clients:
+            return self.clients
 
 
 @retry((IOError, TimeoutError, CommandFailed), tries=7, delay=2)
