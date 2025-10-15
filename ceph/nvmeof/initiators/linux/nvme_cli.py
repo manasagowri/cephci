@@ -2,7 +2,10 @@ import json
 
 from ceph.ceph_admin.common import config_dict_to_string
 from cli import Cli
+from cli.utilities.utils import get_node_by_id
 from utility.log import Log
+from utility.retry import retry
+from utility.utils import run_fio
 
 LOG = Log(__name__)
 
@@ -238,3 +241,49 @@ class NVMeCLI(Cli):
             f"{config_dict_to_string(kwargs)} -v"
         )
         return self.execute(cmd=cmd, sudo=True)
+
+
+def initiators(ceph_cluster, gateway, config):
+    """Configure NVMe Initiators."""
+    client = get_node_by_id(ceph_cluster, config["node"])
+    initiator = NVMeCLI(client)
+    initiator.disconnect_all()
+
+    connect_cmd_args = {
+        "transport": "tcp",
+        "traddr": gateway.ip_address,
+        "trsvcid": 8009,
+    }
+    LOG.debug(initiator.connect_all(**connect_cmd_args))
+
+
+def fetch_drive(node, uuid):
+    """Fetch Drive from node using UUID."""
+    # lsblk -np -r -o "name,wwn"
+    out, _ = node.exec_command(cmd=f"lsblk -np -r -o name,wwn | grep {uuid}", sudo=True)
+    if out:
+        return out.split(" ")[0]
+
+
+@retry(Exception, tries=5, delay=10)
+def run_io(ceph_cluster, ns_uuid, io):
+    """Run IO on newly added namespace."""
+    LOG.info(io)
+    client = get_node_by_id(ceph_cluster, io["node"])
+    device_path = fetch_drive(client, ns_uuid)
+
+    if device_path is None:
+        raise Exception(f"NVMe volume not found for {ns_uuid}")
+
+    LOG.debug(device_path)
+    io_args = {
+        "device_name": device_path,
+        "client_node": client,
+        "run_time": "10",
+        "io_type": io["io_type"],
+        "long_running": True,
+        "cmd_timeout": 600,
+    }
+    result = run_fio(**io_args)
+    if result != 0:
+        raise Exception("FIO failure")

@@ -1,8 +1,11 @@
 import json
+import time
 
 from ceph.ceph import CommandFailed
+from ceph.ceph_admin.orch import Orch
 from ceph.nvmeof.initiators.linux import Initiator
 from ceph.parallel import parallel
+from ceph.utils import get_node_by_id
 from tests.nvmeof.workflows.exceptions import NoDevicesFound
 from utility.log import Log
 from utility.retry import retry
@@ -20,6 +23,9 @@ class NVMeInitiator(Initiator):
         # TODO: Need to cosume initiator nqn rather than getting from outside
         self.nqn = nqn
         self.auth_mode = ""
+        self.node = node
+        # self.clients = []
+        # self.initiators = {}
 
     def fetch_lsblk_nvme_devices_dict(self):
         """Validate all devices at client side.
@@ -313,6 +319,100 @@ class NVMeInitiator(Initiator):
             raise Exception(f"Other registrants remain; regctl={regctl_count}")
 
         return unregister_out, report_out
+
+    @retry((IOError, TimeoutError, CommandFailed), tries=7, delay=2)
+    def validate_io(self, namespaces, cluster, negative=False):
+        """Validate Continuous IO on namespaces.
+        - Collect rbd disk usage info for each rbd image.
+        - Validate written bytes value is incremental.
+        Args:
+            namespaces: list of namespaces
+        """
+
+        orch = Orch(cluster)
+
+        def io_value(ns):
+            sub_ns, pool, image = ns.rsplit("|", 2)
+            count = 3
+            samples = []
+            for _ in range(count):
+                out, _ = orch.shell(
+                    args=[f"rbd --format json du {pool}/{image}"], timeout=600
+                )
+                out = json.loads(out)["images"][0]
+                samples.append(out)
+                time.sleep(6)
+            return sub_ns, f"{pool}/{image}", samples
+
+        def validate_incremetal_io(write_samples):
+            for i in range(len(write_samples) - 1):
+                if write_samples[i] >= write_samples[i + 1]:
+                    return False
+            return True
+
+        with parallel() as p:
+            for namespace in namespaces:
+                p.spawn(io_value, namespace)
+
+            for result in p:
+                subsys, pool_img, samples = result
+                res = [i["used_size"] for i in samples]
+
+                LOG.info(
+                    f"[ {subsys}|{pool_img} ] RBD DU Detailed - {log_json_dump(samples)}"
+                )
+                LOG.info(f"[ {subsys}|{pool_img} ] RBD DU samples - {res}")
+                if not validate_incremetal_io(res):
+                    if negative:
+                        LOG.info(
+                            f"[ {subsys}|{pool_img} ] IO is not progressing as expected - {res}"
+                        )
+                        continue
+                    raise IOError(
+                        f"[ {subsys}|{pool_img} ] IO is not progressing - {res}"
+                    )
+                if negative:
+                    LOG.error(
+                        f"[ {subsys}|{pool_img} ] IO is progressing as expected - {res}"
+                    )
+                    raise IOError(
+                        f"[ {subsys}|{pool_img} ] IO is progressing as expected - {res}"
+                    )
+                LOG.info(f"IO validation for {subsys}|{pool_img} is successful.")
+
+        LOG.info("IO Validation is Successfull on all RBD images..")
+
+
+def get_or_create_initiator(ceph_cluster, node_id, nqn):
+    """Get existing NVMeInitiator or create a new one for each (node_id, nqn)."""
+    key = (node_id, nqn)  # Use both as dictionary key
+    initiators = {}
+    if key not in initiators:
+        node = get_node_by_id(ceph_cluster, node_id)
+        initiators[key] = NVMeInitiator(node, nqn)
+
+    return initiators
+
+
+def prepare_io_execution(gateway, ceph_cluster, io_clients):
+    """Prepare FIO Execution.
+    initiators:                             # Configure Initiators with all pre-req
+        - nqn: connect-all
+        listener_port: 4420
+        node: node10
+    """
+    clients = []
+    for io_client in io_clients:
+        nqn = io_client.get("nqn")
+        if io_client.get("subnqn"):
+            nqn = io_client.get("subnqn")
+        initiators = get_or_create_initiator(ceph_cluster, io_client["node"], nqn)
+        for init_key, client in initiators.items():
+            if init_key == (io_client["node"], nqn):
+                client.connect_targets(gateway, io_client)
+            if client not in clients:
+                clients.append(client)
+    return clients
 
 
 @retry((IOError, TimeoutError, CommandFailed), tries=7, delay=2)

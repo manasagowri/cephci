@@ -112,6 +112,8 @@ tests:
         rbd_pool: rbd
         do_not_create_image: true
         rep-pool-only: true
+        nvme_metadata_pool: rbd
+        gw_group: group1
         steps:
           - config:
               command: create_subsystem

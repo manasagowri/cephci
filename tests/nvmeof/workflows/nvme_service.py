@@ -2,6 +2,8 @@
 NVMe Service, Gateway Group, and Gateway classes for NVMeoF workflows.
 """
 
+import json
+
 from ceph.ceph_admin.orch import Orch
 from ceph.utils import get_nodes_by_ids
 from tests.cephadm import test_nvmeof
@@ -32,17 +34,45 @@ class NVMeService:
         self.rbd_pool = config.get("rbd_pool")
         if not self.rbd_pool:
             raise ValueError("Please provide RBD pool name via rbd_pool")
-        gw_nodes = config.get("gw_nodes", None) or config.get("gw_node", None)
-        if not gw_nodes:
-            raise ValueError("Please provide gateway nodes via gw_nodes or gw_node")
+        # gw_nodes = config.get("gw_nodes", None) or config.get("gw_node", None)
+        # if not gw_nodes:
+        #     raise ValueError("Please provide gateway nodes via gw_nodes or gw_node")
 
-        if not isinstance(gw_nodes, list):
-            gw_nodes = [gw_nodes]
+        # if not isinstance(gw_nodes, list):
+        #     gw_nodes = [gw_nodes]
 
-        self.gw_nodes = get_nodes_by_ids(self.ceph_cluster, gw_nodes)
+        # self.gw_nodes = get_nodes_by_ids(self.ceph_cluster, gw_nodes)
+        self._get_gw_nodes()
         self.is_spec_or_mtls = self.mtls or self.config.get("spec_deployment", False)
         if self.inband_auth_mode:
             self.is_spec_or_mtls = True
+
+    def _get_gw_nodes(self):
+        """Retrieve gateway nodes based on configuration."""
+        if self.config.get("install"):
+            gw_nodes = self.config.get("gw_nodes", None) or self.config.get(
+                "gw_node", None
+            )
+            if not gw_nodes:
+                raise ValueError("Please provide gateway nodes via gw_nodes or gw_node")
+
+            if not isinstance(gw_nodes, list):
+                gw_nodes = [gw_nodes]
+
+            self.gw_nodes = get_nodes_by_ids(self.ceph_cluster, gw_nodes)
+        else:
+            orch = Orch(self.ceph_cluster, **{})
+            out, _ = orch.ps(
+                {"base_cmd_args": {"format": "json"}, "args": {"daemon_type": "nvmeof"}}
+            )
+            daemons = json.loads(out)
+            if not daemons:
+                raise ValueError("No NVMeOF daemons found in the cluster")
+            self.gw_nodes = []
+            for daemon in daemons:
+                node = self.ceph_cluster.get_node_by_hostname(daemon["hostname"])
+                if node not in self.gw_nodes:
+                    self.gw_nodes.append(node)
 
     def _determine_nvme_metadata_pool(self):
         """
