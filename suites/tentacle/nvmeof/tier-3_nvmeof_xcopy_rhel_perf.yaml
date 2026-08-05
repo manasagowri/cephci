@@ -1,0 +1,288 @@
+# Ceph NVMe-oF XCOPY/CNC RHEL performance and soak tests (P1/P2)
+# CNC vs host R/W, soak, rate limiter, fio+CNC parallel
+# cluster configuration file: conf/tentacle/nvmeof/ceph_nvmeof_2GW_1Client.yaml
+# inventory: conf/inventory/rhel-9.6-server-x86_64-xlarge.yaml
+---
+tests:
+
+  - test:
+      abort-on-fail: true
+      module: install_prereq.py
+      name: install ceph pre-requisites
+
+  - test:
+      abort-on-fail: true
+      config:
+        verify_cluster_health: true
+        steps:
+          - config:
+              command: bootstrap
+              service: cephadm
+              args:
+                mon-ip: node1
+                registry-url: registry.redhat.io
+                allow-fqdn-hostname: true
+                allow-overwrite: true
+                log-to-file: true
+          - config:
+              command: add_hosts
+              service: host
+              args:
+                attach_ip_address: true
+                labels: apply-all-labels
+          - config:
+              command: apply
+              service: mgr
+              args:
+                placement:
+                  label: mgr
+          - config:
+              command: apply
+              service: mon
+              args:
+                placement:
+                  label: mon
+          - config:
+              command: apply
+              service: osd
+              args:
+                all-available-devices: true
+      desc: RHCS cluster deployment using cephadm
+      destroy-cluster: false
+      module: test_cephadm.py
+      name: deploy cluster
+
+  - test:
+      abort-on-fail: true
+      config:
+        command: add
+        id: client.1
+        nodes:
+          - node6
+        copy_admin_keyring: true
+        install_packages:
+          - ceph-common
+      desc: Setup RHEL NVMe-oF initiator client
+      destroy-cluster: false
+      module: test_client.py
+      name: configure Ceph client for NVMe tests
+
+  # XCOPY Performance — CNC Enabled vs Host R/W (RHEL)
+  - test:
+      abort-on-fail: true
+      config:
+        gw_nodes:
+          - node4
+          - node5
+        rbd_pool: rbd
+        nvme_metadata_pool: rbd
+        gw_group: gw_group1
+        install: true
+        do_not_create_image: true
+        rep-pool-only: true
+        rep_pool_config:
+          pool: rbd
+        operation: perf_cnc_vs_host_rw
+        copy_count: 500
+        copy_blocks: 8192
+        cnc_config:
+          host_behav_support_cnc: true
+          chunk_nlb: 512
+          max_inflight: 8
+          rate_limit_bytes: 400000000
+        cleanup:
+          - subsystems
+          - initiators
+          - disconnect_all
+          - pool
+          - gateway
+        subsystems:
+          - nqn: nqn.2016-06.io.spdk:cnode1
+            serial: 1
+            bdevs:
+              - count: 2
+                size: 10G
+                ns_create_image: true
+            listeners:
+              - node4
+              - node5
+            listener_port: 4420
+            allow_host: "*"
+        initiators:
+          - nqn: connect-all
+            listener_port: 4420
+            node: node6
+      desc: >
+        Compare 500x4MiB CNC copies against host sequential read/write
+        baseline; log speedup ratio
+      destroy-cluster: false
+      module: test_nvmeof_xcopy_cnc_rhel.py
+      name: RHEL CNC vs host R/W performance
+
+  # Sustained CNC Soak (RHEL only)
+  - test:
+      abort-on-fail: true
+      config:
+        gw_nodes:
+          - node4
+          - node5
+        rbd_pool: rbd
+        nvme_metadata_pool: rbd
+        gw_group: gw_group1
+        install: true
+        do_not_create_image: true
+        rep-pool-only: true
+        rep_pool_config:
+          pool: rbd
+        operation: cnc_soak
+        duration_min: 30
+        sample_interval_sec: 300
+        spot_check_minutes:
+          - 15
+          - 30
+        loop_copies: 50
+        copy_blocks: 8192
+        cnc_config:
+          host_behav_support_cnc: true
+          chunk_nlb: 512
+          max_inflight: 8
+          rate_limit_bytes: 400000000
+        cleanup:
+          - subsystems
+          - initiators
+          - disconnect_all
+          - pool
+          - gateway
+        subsystems:
+          - nqn: nqn.2016-06.io.spdk:cnode1
+            serial: 1
+            bdevs:
+              - count: 2
+                size: 10G
+                ns_create_image: true
+            listeners:
+              - node4
+              - node5
+            listener_port: 4420
+            allow_host: "*"
+        initiators:
+          - nqn: connect-all
+            listener_port: 4420
+            node: node6
+      desc: >
+        RHEL sustained CNC soak with gateway resource sampling and
+        periodic data spot-checks
+      destroy-cluster: false
+      module: test_nvmeof_xcopy_cnc_rhel.py
+      name: RHEL sustained CNC soak
+
+  # CNC Rate Limiter Under Overload
+  - test:
+      abort-on-fail: true
+      config:
+        gw_nodes:
+          - node4
+          - node5
+        rbd_pool: rbd
+        nvme_metadata_pool: rbd
+        gw_group: gw_group1
+        install: true
+        do_not_create_image: true
+        rep-pool-only: true
+        rep_pool_config:
+          pool: rbd
+        operation: rate_limiter_enforcement
+        concurrent_copies: 4
+        copy_blocks: 65536
+        rate_limit_bytes: 1048576
+        unlimited_rate_limit_bytes: 400000000
+        max_limited_MBps: 3
+        min_slowdown: 2
+        cnc_config:
+          host_behav_support_cnc: true
+          chunk_nlb: 512
+          max_inflight: 8
+        cleanup:
+          - subsystems
+          - initiators
+          - disconnect_all
+          - pool
+          - gateway
+        subsystems:
+          - nqn: nqn.2016-06.io.spdk:cnode1
+            serial: 1
+            bdevs:
+              - count: 2
+                size: 20G
+                ns_create_image: true
+            listeners:
+              - node4
+              - node5
+            listener_port: 4420
+            allow_host: "*"
+        initiators:
+          - nqn: connect-all
+            listener_port: 4420
+            node: node6
+      desc: >
+        Overload SPDK with concurrent CNC and prove rate-limit-bytes
+        caps bandwidth vs unlimited baseline
+      destroy-cluster: false
+      module: test_nvmeof_xcopy_cnc_rhel.py
+      name: CNC rate limiter under overload
+
+  # Parallel Host Fio IO with CNC
+  - test:
+      abort-on-fail: true
+      config:
+        gw_nodes:
+          - node4
+          - node5
+        rbd_pool: rbd
+        nvme_metadata_pool: rbd
+        gw_group: gw_group1
+        install: true
+        do_not_create_image: true
+        rep-pool-only: true
+        rep_pool_config:
+          pool: rbd
+        operation: fio_parallel_cnc
+        fio_size: 1G
+        fio_bs: 1M
+        fio_iodepth: 32
+        fio_runtime: 60
+        cnc_loop_count: 50
+        cnc_blocks: 8192
+        cnc_config:
+          host_behav_support_cnc: true
+          chunk_nlb: 512
+          max_inflight: 8
+          rate_limit_bytes: 400000000
+        cleanup:
+          - subsystems
+          - initiators
+          - disconnect_all
+          - pool
+          - gateway
+        subsystems:
+          - nqn: nqn.2016-06.io.spdk:cnode1
+            serial: 1
+            bdevs:
+              - count: 2
+                size: 20G
+                ns_create_image: true
+            listeners:
+              - node4
+              - node5
+            listener_port: 4420
+            allow_host: "*"
+        initiators:
+          - nqn: connect-all
+            listener_port: 4420
+            node: node6
+      desc: >
+        Host fio write/read on one LBA region while CNC copies another
+        non-overlapping region in parallel
+      destroy-cluster: false
+      module: test_nvmeof_xcopy_cnc_rhel.py
+      name: parallel fio IO with CNC
