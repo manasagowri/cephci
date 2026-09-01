@@ -1,10 +1,14 @@
+import time
 from json import loads
 from typing import Any
 
 from ceph.nvmeof.cli.v1 import NVMeGWCLI
 from ceph.nvmeof.cli.v2 import NVMeGWCLIV2
 from cli.utilities.utils import exec_command_on_container, get_running_containers
+from utility.log import Log
 from utility.systemctl import SystemCtl
+
+LOG = Log(__name__)
 
 
 class NVMeGatewayBase:
@@ -69,6 +73,66 @@ class NVMeGatewayBase:
     @property
     def hostname(self):
         return self.node.hostname
+
+    @staticmethod
+    def _gateway_ready(info):
+        """True when the gateway daemon is up (has a name, not going down)."""
+        if not info:
+            return False
+        name = str(info.get("name") or "").strip()
+        if not name:
+            return False
+        version = str(info.get("version") or "").lower()
+        if "going down" in version:
+            return False
+        if info.get("bool_status") is False:
+            return False
+        return True
+
+    @staticmethod
+    def _daemon_name_from_info(info):
+        """Strip the ``client.`` prefix when present; tolerate names with no dot."""
+        name = str((info or {}).get("name") or "").strip()
+        if "." in name:
+            return name.split(".", 1)[1]
+        return name
+
+    def load_gateway_info(self, tries=12, delay=10):
+        """Fetch gateway info, retrying while the daemon is down or still starting."""
+        last = None
+        for attempt in range(1, tries + 1):
+            try:
+                info = self.fetch_gateway()
+            except Exception as err:
+                LOG.warning(
+                    "Gateway %s info failed (attempt %s/%s): %s",
+                    self.node.hostname,
+                    attempt,
+                    tries,
+                    err,
+                )
+                last = err
+                if attempt < tries:
+                    time.sleep(delay)
+                continue
+            last = info
+            if self._gateway_ready(info):
+                return info
+            LOG.warning(
+                "Gateway %s not ready (attempt %s/%s): name=%r version=%s "
+                "bool_status=%s",
+                self.node.hostname,
+                attempt,
+                tries,
+                (info or {}).get("name"),
+                (info or {}).get("version"),
+                (info or {}).get("bool_status"),
+            )
+            if attempt < tries:
+                time.sleep(delay)
+        raise RuntimeError(
+            f"Gateway {self.node.hostname} did not become ready: {last}"
+        )
 
     def get_io_stats(self, subsystem, namespaces):
         """Fetch I/O statistics - must be implemented in version-specific class."""
@@ -163,9 +227,9 @@ class NVMeGatewayV1(NVMeGatewayBase, NVMeGWCLI):
     def __init__(self, node, **kwargs):
         super().__init__(node, **kwargs)
         NVMeGWCLI.__init__(self, node, **kwargs)
-        self.ana_group = self.fetch_gateway()
+        self.ana_group = self.load_gateway_info()
         self.ana_group_id = self.ana_group["load_balancing_group"]
-        self.daemon_name = self.ana_group["name"].split(".", 1)[1]
+        self.daemon_name = self._daemon_name_from_info(self.ana_group)
 
 
 class NVMeGatewayV2(NVMeGatewayBase, NVMeGWCLIV2):
@@ -174,10 +238,10 @@ class NVMeGatewayV2(NVMeGatewayBase, NVMeGWCLIV2):
     def __init__(self, node, **kwargs):
         super().__init__(node, **kwargs)
         NVMeGWCLIV2.__init__(self, node, **kwargs)
-        self.ana_group = self.fetch_gateway()
+        self.ana_group = self.load_gateway_info()
         self.gateway_group = self.ana_group["group"]
         self.ana_group_id = self.ana_group["load_balancing_group"]
-        self.daemon_name = self.ana_group["name"].split(".", 1)[1]
+        self.daemon_name = self._daemon_name_from_info(self.ana_group)
 
 
 def create_gateway(

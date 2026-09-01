@@ -254,9 +254,32 @@ class NVMeService:
                     self.service_id = service_id
                     break
 
+    def resolve_nvmeof_service(self):
+        """Set service_name/service_id from ``ceph orch ls nvmeof`` if unset."""
+        if getattr(self, "service_name", None):
+            return self.service_name
+        orch = Orch(self.ceph_cluster, **{})
+        out, _ = orch.shell(args=["ceph orch ls nvmeof --format json"])
+        services = json.loads(out) if out else []
+        for service in services:
+            if "nvmeof" not in service.get("service_name", ""):
+                continue
+            if self.group and self.group not in service["service_name"]:
+                continue
+            self.service_name = service["service_name"]
+            self.service_id = service.get("service_id")
+            LOG.info(
+                "Resolved NVMeoF service_name=%s service_id=%s",
+                self.service_name,
+                self.service_id,
+            )
+            return self.service_name
+        return None
+
     def redeploy(self, wait_sec=30):
         """Redeploy the NVMe-oF orchestrator service after spec apply."""
-        if not self.service_name:
+        self.resolve_nvmeof_service()
+        if not getattr(self, "service_name", None):
             raise RuntimeError("NVMe-oF service name not set; deploy the service first")
         orch = Orch(self.ceph_cluster, **{})
         cmd = f"ceph orch redeploy {self.service_name}"

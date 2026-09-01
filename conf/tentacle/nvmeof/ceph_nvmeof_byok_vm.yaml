@@ -1,23 +1,36 @@
+# VM cluster for a small NVMeoF BYOK (dummy KMIP) repro
+#
+# Topology:
+#   node1          : installer / mon / mgr / KMIP
+#   node2–node5    : mons / OSDs
+#   node6–node9    : NVMeoF gateways (group2)
+#   node10–node11  : NVMe initiators
+#
+# If you already have a pickle, edit gw_nodes / kmip_nodes in the suite
+# to match that cluster (the ibcloud repro used GWs node2/3/5/6 and
+# KMIP on node8).
+#
+# Suite: suites/tentacle/nvmeof/tier-3_nvmeof_byok_vm.yaml
+---
 globals:
   - ceph-cluster:
       name: ceph
-      vm-size: ci.standard.large
+      vm-size: ci.standard.xl
       node1:
         role:
           - _admin
           - installer
           - mon
           - mgr
+          - kmip
       node2:
         role:
           - mon
           - mgr
-          - nvmeof-gw
       node3:
         role:
           - mon
           - osd
-          - nvmeof-gw
         no-of-volumes: 4
         disk-size: 20
       node4:
@@ -31,20 +44,25 @@ globals:
           - mds
           - osd
           - rgw
-          - nvmeof-gw
         no-of-volumes: 4
         disk-size: 20
       node6:
         role:
           - nvmeof-gw
-          - osd
-        no-of-volumes: 4
-        disk-size: 20
       node7:
+        role:
+          - nvmeof-gw
+      node8:
+        role:
+          - nvmeof-gw
+      node9:
+        role:
+          - nvmeof-gw
+      node10:
         id: node10
         role:
           - client
-      node8:
+      node11:
         id: node11
         role:
           - client

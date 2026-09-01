@@ -35,6 +35,16 @@ KEY_MAP = {
     "w-megabytes-per-second": "w_mbytes_per_second",
     "level": "log_level",
     "auto-visible": "auto_visible",
+    "encryption-format": "encryption_format",
+    "encryption_format": "encryption_format",
+    "key-id": "key_id",
+    "key_id": "key_id",
+    "kmip-name": "name",
+    "kmip_name": "name",
+    "kmip-address": "address",
+    "kmip_address": "address",
+    "kmip-port": "port",
+    "kmip_port": "port",
 }
 
 
@@ -79,7 +89,10 @@ class BaseCLI:
         if self.mtls:
             pass
 
-        cmd_args = kwargs.get("args", {})
+        cmd_args = kwargs.get("args", {}) or {}
+        positional_args = kwargs.get("positional_args") or kwargs.get("pos_args") or []
+        if isinstance(positional_args, str):
+            positional_args = [positional_args]
 
         # Gateway group
         if not cmd_args.get("gw_group"):
@@ -98,8 +111,14 @@ class BaseCLI:
             self.__local_mtls_cert_path(),
             entity,
             action,
-            config_dict_to_string(cmd_args),
-            config_dict_to_string(base_cmd_args),
         ]
+        command.extend(str(arg) for arg in positional_args)
+        command.extend(
+            [
+                config_dict_to_string(cmd_args),
+                config_dict_to_string(base_cmd_args),
+            ]
+        )
+        command = [part for part in command if part]
         out, err = self.shell(args=command, pretty_print=True)
         return out, err

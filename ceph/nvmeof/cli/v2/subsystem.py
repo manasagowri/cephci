@@ -44,3 +44,21 @@ class Subsystem:
 
     def list(self, **kwargs):
         return self.base.run_nvme_cli(self.name, "list", **kwargs)
+
+    def add_kmip_server_endpoint(self, **kwargs):
+        """Add a KMIP server endpoint to a subsystem.
+
+        Prefer ``positional_args`` of ``[nqn, name, address, port]`` to match
+        ``ceph nvmeof subsystem add_kmip_server_endpoint <nqn> <name> <ip> <port>``.
+        Flag form uses ``args`` keys ``nqn``/``subsystem``, ``name``, ``address``,
+        ``port``.
+        """
+        return self.base.run_nvme_cli(self.name, "add_kmip_server_endpoint", **kwargs)
+
+    def list_kmip_server_endpoints(self, **kwargs):
+        """List KMIP server endpoints configured on a subsystem."""
+        return self.base.run_nvme_cli(self.name, "list_kmip_server_endpoints", **kwargs)
+
+    def del_kmip_server_endpoint(self, **kwargs):
+        """Remove a KMIP server endpoint from a subsystem."""
+        return self.base.run_nvme_cli(self.name, "del_kmip_server_endpoint", **kwargs)
