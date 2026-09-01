@@ -122,12 +122,12 @@ class CephAdmin(BootstrapMixin, ShellMixin, RegistryLoginMixin):
                 node.exec_command(sudo=True, cmd="yum update metadata", check_ec=False)
         elif repo:
             base_url = repo
-            cmd = f"yum-config-manager --add-repo {base_url}"
+            cmd = f"yum config-manager --add-repo {base_url}"
             for node in self.cluster.get_nodes():
                 node.exec_command(sudo=True, cmd=cmd)
 
         elif base_url.endswith(".repo"):
-            cmd = f"yum-config-manager --add-repo {base_url}"
+            cmd = f"yum config-manager --add-repo {base_url}"
             for node in self.cluster.get_nodes():
                 node.exec_command(sudo=True, cmd=cmd)
         else:
@@ -137,7 +137,7 @@ class CephAdmin(BootstrapMixin, ShellMixin, RegistryLoginMixin):
                 base_url += "Tools"
             else:
                 base_url += "compose/Tools/x86_64/os/"
-            cmd = f"yum-config-manager --add-repo {base_url}"
+            cmd = f"yum config-manager --add-repo {base_url}"
             for node in self.cluster.get_nodes():
                 node.exec_command(sudo=True, cmd=cmd)
 
@@ -214,7 +214,7 @@ class CephAdmin(BootstrapMixin, ShellMixin, RegistryLoginMixin):
             )
             node.exec_command(
                 sudo=True,
-                cmd=f"yum-config-manager --add-repo {public_repo_url}",
+                cmd=f"yum config-manager --add-repo {public_repo_url}",
                 check_ec=False,
             )
             node.exec_command(

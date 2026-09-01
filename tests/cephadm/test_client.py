@@ -97,7 +97,7 @@ def add(cls, config: Dict) -> None:
             enable_cmd = "subscription-manager repos --enable="
             disable_all = [
                 r"subscription-manager repos --disable=*",
-                r"yum-config-manager --disable \*",
+                r"yum config-manager --disable \*",
             ]
             cmd = 'subscription-manager repos --list-enabled | grep -i "Repo ID"'
 

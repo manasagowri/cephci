@@ -1,0 +1,58 @@
+# Continuous FIO on existing NVMeoF group2 namespaces.
+#
+# Does not create subsystems, namespaces, or KMIP objects.
+# Discovers namespaces with ns list only (parents and clones).
+# Run after BYOK scale with --reuse against the same cluster:
+#
+#   conf/tentacle/nvmeof/ceph_nvmeof_byok_baremetal.yaml
+#
+# Fill estimate (up to 1024 NS x 50G if all parents+clones are live).
+# Sequential 1M writes, 2 clients / 4 gateways.
+#
+# io_runtime is the post-fill FIO duration in seconds (default 24h).
+#
+# Namespace masking and FIO apply to every usable parent and clone.
+# Degraded namespaces (empty image / size 0) are skipped.
+#
+# resume_from: io  — reuse host ACLs already on the gateway
+# (skip bulk change_visibility/add_host) and continue at connect/fill.
+
+tests:
+  - test:
+      abort-on-fail: true
+      config:
+        gw_nodes:
+          - node9
+          - node10
+          - node11
+          - node12
+        rbd_pool: rbd
+        nvme_metadata_pool: rbd
+        gw_group: group2
+        install: false
+        do_not_create_pool: true
+        do_not_create_image: true
+        rep-pool-only: true
+        rep_pool_config:
+          pool: rbd
+        subsystems: 32
+        namespaces_per_subsystem: 16
+        image_size: 50G
+        listener_port: 4420
+        fill_percent: 100
+        fill_bs: 1M
+        iodepth: 16
+        continuous: true
+        io_type: randrw
+        continuous_bs: 64k
+        io_runtime: 14400
+        ns_masking: true
+        resume_from: io
+        masking_sample_ns: 2
+        masking_sample_runtime: 15
+      desc: >
+        Mask each group2 parent and clone namespace to one client,
+        verify visibility, fill 100% with FIO, then keep randrw IO running
+      destroy-cluster: false
+      module: test_ceph_nvmeof_byok_continuous_io.py
+      name: NVMeoF BYOK continuous IO

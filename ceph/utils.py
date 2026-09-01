@@ -1169,7 +1169,7 @@ def setup_repos(
     ibm_build=False,
 ):
     if base_url.endswith(".repo"):
-        cmd = f"yum-config-manager --add-repo {base_url}"
+        cmd = f"yum config-manager --add-repo {base_url}"
         ceph.exec_command(sudo=True, cmd=cmd)
 
     elif base_url.endswith("/repo"):

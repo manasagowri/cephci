@@ -5,6 +5,7 @@ NVMe Service, Gateway Group, and Gateway classes for NVMeoF workflows.
 import json
 import time
 
+import yaml
 from looseversion import LooseVersion
 
 from ceph.ceph_admin.orch import Orch
@@ -126,6 +127,17 @@ class NVMeService:
         # Add group if specified
         if self.group:
             spec["spec"]["group"] = self.group
+
+        if self.config.get("gw_max_namespaces"):
+            spec["spec"]["max_namespaces"] = int(self.config["gw_max_namespaces"])
+        if self.config.get("max_namespaces_per_subsystem"):
+            spec["spec"]["max_namespaces_per_subsystem"] = int(
+                self.config["max_namespaces_per_subsystem"]
+            )
+        if self.config.get("max_namespaces_with_netmask"):
+            spec["spec"]["max_namespaces_with_netmask"] = int(
+                self.config["max_namespaces_with_netmask"]
+            )
 
         if self.is_spec_or_mtls:
             cfg = {
@@ -254,13 +266,313 @@ class NVMeService:
                     self.service_id = service_id
                     break
 
+    def resolve_nvmeof_service(self):
+        """Set service_name/service_id from ``ceph orch ls nvmeof`` if unset."""
+        if getattr(self, "service_name", None):
+            return self.service_name
+        orch = Orch(self.ceph_cluster, **{})
+        out, _ = orch.shell(args=["ceph orch ls nvmeof --format json"])
+        services = json.loads(out) if out else []
+        for service in services:
+            if "nvmeof" not in service.get("service_name", ""):
+                continue
+            if self.group and self.group not in service["service_name"]:
+                continue
+            self.service_name = service["service_name"]
+            self.service_id = service.get("service_id")
+            LOG.info(
+                "Resolved NVMeoF service_name=%s service_id=%s",
+                self.service_name,
+                self.service_id,
+            )
+            return self.service_name
+        return None
+
+    def _exported_nvmeof_spec(self, orch):
+        """Return an orch-apply-safe spec dict for this gateway group."""
+        self.resolve_nvmeof_service()
+        if not getattr(self, "service_name", None):
+            raise RuntimeError("NVMe-oF service name not set; deploy the service first")
+        out, _ = orch.shell(
+            args=[
+                f"ceph orch ls --export --service-name {self.service_name} -f yaml"
+            ]
+        )
+        docs = [doc for doc in yaml.safe_load_all(out or "") if doc]
+        if not docs:
+            raise RuntimeError(
+                f"Empty orch export for NVMeoF service {self.service_name}"
+            )
+        doc = docs[0]
+        apply_spec = {
+            key: doc[key]
+            for key in ("service_type", "service_id", "placement", "spec")
+            if key in doc
+        }
+        apply_spec.setdefault("service_type", "nvmeof")
+        apply_spec.setdefault("spec", {})
+        return apply_spec
+
+    def ensure_namespace_limits(
+        self,
+        max_namespaces=4096,
+        max_namespaces_per_subsystem=512,
+        max_namespaces_with_netmask=4096,
+    ):
+        """Raise group-wide NVMeoF spec limits when they are below the targets.
+
+        ``max_namespaces`` here is the gateway-group total (up to 4096), not the
+        per-subsystem ``--max-namespaces`` used at subsystem add.
+
+        Returns True when the spec was applied (daemons are expected to restart).
+        """
+        orch = Orch(self.ceph_cluster, **{})
+        apply_spec = self._exported_nvmeof_spec(orch)
+        spec = apply_spec.setdefault("spec", {})
+        updates = {
+            "max_namespaces": int(max_namespaces),
+            "max_namespaces_per_subsystem": int(max_namespaces_per_subsystem),
+            "max_namespaces_with_netmask": int(max_namespaces_with_netmask),
+        }
+        changed = []
+        for key, value in updates.items():
+            current = int(spec.get(key) or 0)
+            if current >= value:
+                LOG.info(
+                    "NVMeoF spec %s=%s already meets target %s",
+                    key,
+                    current,
+                    value,
+                )
+                continue
+            LOG.info("Updating NVMeoF spec %s %s -> %s", key, current, value)
+            spec[key] = value
+            changed.append(f"{key}:{current}->{value}")
+        if not changed:
+            LOG.info(
+                "NVMeoF spec already has group limits "
+                "max_namespaces=%s max_namespaces_per_subsystem=%s "
+                "max_namespaces_with_netmask=%s",
+                spec.get("max_namespaces"),
+                spec.get("max_namespaces_per_subsystem"),
+                spec.get("max_namespaces_with_netmask"),
+            )
+            return False
+
+        path = "/tmp/cephci_nvmeof_ns_limits.yaml"
+        content = yaml.safe_dump(apply_spec, sort_keys=False)
+        spec_file = orch.installer.remote_file(
+            sudo=True, file_name=path, file_mode="w"
+        )
+        spec_file.write(content)
+        spec_file.flush()
+        LOG.info(
+            "Applying NVMeoF namespace limits on %s: %s",
+            self.service_name,
+            ", ".join(changed),
+        )
+        orch.shell(
+            args=["ceph", "orch", "apply", "-i", path],
+            base_cmd_args={"mount": "/tmp:/tmp"},
+        )
+        return True
+
+    def ensure_rebalance_period(self, period_sec):
+        """Set ``spec.rebalance_period_sec`` on the live NVMeoF service.
+
+        ``ceph orch apply`` records the spec. Redeploy only if the exported
+        spec still does not show the requested period after apply.
+
+        Returns True when daemons were redeployed.
+        """
+        period_sec = int(period_sec)
+        orch = Orch(self.ceph_cluster, **{})
+        apply_spec = self._exported_nvmeof_spec(orch)
+        spec = apply_spec.setdefault("spec", {})
+        current = spec.get("rebalance_period_sec")
+        try:
+            current_int = int(current) if current is not None else None
+        except (TypeError, ValueError):
+            current_int = None
+        if current_int == period_sec:
+            LOG.info(
+                "NVMeoF spec %s already has rebalance_period_sec=%s",
+                self.service_name,
+                period_sec,
+            )
+            return False
+
+        spec["rebalance_period_sec"] = period_sec
+        path = "/tmp/cephci_nvmeof_rebalance.yaml"
+        content = yaml.safe_dump(apply_spec, sort_keys=False)
+        spec_file = orch.installer.remote_file(
+            sudo=True, file_name=path, file_mode="w"
+        )
+        spec_file.write(content)
+        spec_file.flush()
+        LOG.info(
+            "Applying NVMeoF rebalance_period_sec=%s on %s",
+            period_sec,
+            self.service_name,
+        )
+        orch.shell(
+            args=["ceph", "orch", "apply", "-i", path],
+            base_cmd_args={"mount": "/tmp:/tmp"},
+        )
+        verify = self._exported_nvmeof_spec(orch).setdefault("spec", {})
+        try:
+            applied = int(verify.get("rebalance_period_sec"))
+        except (TypeError, ValueError):
+            applied = None
+        if applied == period_sec:
+            LOG.info(
+                "rebalance_period_sec=%s visible in orch spec without redeploy",
+                period_sec,
+            )
+            return False
+        LOG.warning(
+            "orch apply did not persist rebalance_period_sec=%s (saw %s); redeploying",
+            period_sec,
+            applied,
+        )
+        self.redeploy(wait_sec=0)
+        return True
+
+    def ensure_encryption_key(self, dest_path="/root/encryption.key"):
+        """Enable NVMeoF spec encryption so DHCHAP in-band auth can run.
+
+        Existing BYOK services are deployed without the gateway encryption
+        PSK. ``subsystem change_key`` / host DHCHAP need that key, which is
+        independent of RBD LUKS/KMIP.
+
+        Tentacle DHCHAP deploy copies a PEM to each gateway host and sets
+        ``enable_encryption`` + ``encryption_key_path``. ``ceph orch apply``
+        only records the spec ("Scheduled update"); it does not bounce
+        daemons. This method therefore ``ceph orch redeploy`` afterwards.
+
+        Returns True when the spec was applied and redeploy was issued.
+        """
+        orch = Orch(self.ceph_cluster, **{})
+        apply_spec = self._exported_nvmeof_spec(orch)
+        spec = apply_spec.setdefault("spec", {})
+        if spec.get("enable_encryption") and spec.get("encryption_key_path"):
+            LOG.info(
+                "NVMeoF spec %s already has enable_encryption + "
+                "encryption_key_path; skip apply",
+                self.service_name,
+            )
+            return False
+
+        installer = orch.installer
+        key_file = dest_path
+        last_err = None
+        for bits in (512, 2048):
+            try:
+                installer.exec_command(
+                    cmd=(
+                        f"openssl req -newkey rsa:{bits} -noenc -noout "
+                        f"-keyout {key_file} -batch 2>/dev/null"
+                    ),
+                    sudo=True,
+                )
+                last_err = None
+                break
+            except Exception as exc:
+                last_err = exc
+                LOG.warning("openssl rsa:%s keygen failed: %s", bits, exc)
+        if last_err:
+            raise RuntimeError(
+                f"Could not generate NVMeoF encryption key on installer: {last_err}"
+            )
+        key, _ = installer.exec_command(cmd=f"cat {key_file}", sudo=True)
+        key = (key or "").strip()
+        if not key:
+            raise RuntimeError(f"Empty encryption key from {key_file}")
+        if not key.endswith("\n"):
+            key += "\n"
+
+        for node in self.gw_nodes:
+            LOG.info("Writing NVMeoF encryption key to %s:%s", node.hostname, dest_path)
+            key_fh = node.remote_file(
+                sudo=True, file_name=dest_path, file_mode="w"
+            )
+            key_fh.write(key)
+            key_fh.flush()
+
+        spec.pop("encryption_key", None)
+        spec["enable_encryption"] = True
+        spec["encryption_key_path"] = dest_path
+
+        path = "/tmp/cephci_nvmeof_encryption.yaml"
+        content = yaml.safe_dump(apply_spec, sort_keys=False)
+        spec_file = orch.installer.remote_file(
+            sudo=True, file_name=path, file_mode="w"
+        )
+        spec_file.write(content)
+        spec_file.flush()
+        LOG.info(
+            "Applying NVMeoF enable_encryption + encryption_key_path=%s on %s",
+            dest_path,
+            self.service_name,
+        )
+        out, _ = orch.shell(
+            args=["ceph", "orch", "apply", "-i", path],
+            base_cmd_args={"mount": "/tmp:/tmp"},
+        )
+        LOG.info(
+            "orch apply returned %r; this does not restart daemons, redeploying",
+            (out or "").strip(),
+        )
+        self.redeploy(wait_sec=0)
+        return True
+
+    def wait_for_gateways(self, tries=18, delay=10):
+        """Re-init gateway objects and wait until each daemon reports ready."""
+        self.init_gateways()
+        for gateway in self.gateways:
+            gateway.load_gateway_info(tries=tries, delay=delay)
+        return self.gateways
+
     def redeploy(self, wait_sec=30):
         """Redeploy the NVMe-oF orchestrator service after spec apply."""
-        if not self.service_name:
+        self.resolve_nvmeof_service()
+        if not getattr(self, "service_name", None):
             raise RuntimeError("NVMe-oF service name not set; deploy the service first")
         orch = Orch(self.ceph_cluster, **{})
         cmd = f"ceph orch redeploy {self.service_name}"
         LOG.info("Redeploying NVMe-oF service: %s", cmd)
+        orch.shell(args=[cmd])
+        if wait_sec:
+            time.sleep(wait_sec)
+
+    def restart(self, wait_sec=30):
+        """Restart all NVMe-oF daemons in this gateway group."""
+        self.resolve_nvmeof_service()
+        if not getattr(self, "service_name", None):
+            raise RuntimeError("NVMe-oF service name not set; deploy the service first")
+        orch = Orch(self.ceph_cluster, **{})
+        cmd = f"ceph orch restart {self.service_name}"
+        LOG.info("Restarting NVMe-oF service: %s", cmd)
+        orch.shell(args=[cmd])
+        if wait_sec:
+            time.sleep(wait_sec)
+
+    def restart_daemon(self, gateway, wait_sec=5):
+        """Restart one NVMe-oF gateway daemon via ``ceph orch daemon restart``."""
+        if not gateway.daemon_name:
+            gateway.load_gateway_info()
+        daemon = gateway.daemon_name
+        if not daemon:
+            raise RuntimeError(
+                f"No daemon name for gateway {gateway.node.hostname}"
+            )
+        orch = Orch(self.ceph_cluster, **{})
+        cmd = f"ceph orch daemon restart {daemon}"
+        LOG.info(
+            "Restarting NVMe-oF daemon %s on %s",
+            daemon,
+            gateway.node.hostname,
+        )
         orch.shell(args=[cmd])
         if wait_sec:
             time.sleep(wait_sec)

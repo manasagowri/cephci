@@ -86,3 +86,7 @@ class Namespace:
     def refresh_size(self, **kwargs):
         """Refresh size for a namespace."""
         return self.base.run_nvme_cli(self.name, "refresh_size", **kwargs)
+
+    def reload(self, **kwargs):
+        """Reload a namespace (re-open bdev / encryption after a key restore)."""
+        return self.base.run_nvme_cli(self.name, "reload", **kwargs)

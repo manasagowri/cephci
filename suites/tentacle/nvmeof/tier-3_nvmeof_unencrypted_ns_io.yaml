@@ -1,0 +1,58 @@
+# Unencrypted namespaces on the existing tala group2 subsystems.
+#
+# Cluster configuration:
+#   conf/tentacle/nvmeof/ceph_nvmeof_byok_baremetal.yaml
+#
+# Adds 16 plain (no LUKS/KMIP) namespaces on each of the 32 group2
+# subsystems already used by BYOK scale (512 total). Subsystems already
+# allow 64 namespaces and now hold 16 parents, so 16 extra plain NS fit
+# without raising per-subsystem max-namespaces. Then FIO randrw for 10
+# minutes on those 512 devices only (one job per client, iodepth 4).
+#
+# image_size defaults to 5G so this does not allocate another 25 TB.
+# Set image_size: 50G if you want parity with the encrypted parents.
+#
+# To rerun FIO only against namespaces already added, set:
+#   resume_from: io
+# That skips ns add and masking, reconnects both clients, and starts FIO.
+#
+# Run with --reuse against the existing tala cluster.
+
+tests:
+  - test:
+      abort-on-fail: true
+      config:
+        gw_nodes:
+          - node9
+          - node10
+          - node11
+          - node12
+        rbd_pool: rbd
+        nvme_metadata_pool: rbd
+        gw_group: group2
+        install: false
+        do_not_create_pool: true
+        do_not_create_image: true
+        rep-pool-only: true
+        rep_pool_config:
+          pool: rbd
+        subsystems: 32
+        namespaces_per_subsystem: 16
+        gw_max_namespaces: 4096
+        max_namespaces_per_subsystem: 512
+        max_namespaces_with_netmask: 4096
+        image_size: 5G
+        enable_ha: true
+        listener_port: 4420
+        io_runtime: 600
+        io_type: randrw
+        bs: 64k
+        iodepth: 4
+        gw_poll_interval: 15
+        # Uncomment to skip ns add/masking and only reconnect + FIO:
+        resume_from: io
+      desc: >
+        Add 512 unencrypted namespaces on existing subsystems and run FIO
+      destroy-cluster: false
+      module: test_ceph_nvmeof_unencrypted_ns_io.py
+      name: NVMeoF unencrypted NS IO

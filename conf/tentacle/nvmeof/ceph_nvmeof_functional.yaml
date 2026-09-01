@@ -17,6 +17,7 @@ globals:
         role:
           - mon
           - osd
+          - nvmeof-gw
         no-of-volumes: 4
         disk-size: 20
       node4:

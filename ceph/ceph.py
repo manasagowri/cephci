@@ -1177,6 +1177,27 @@ class TimeoutException(Exception):
     pass
 
 
+def _ssh_session_stale(exc):
+    """True when a Paramiko session died (idle TCP) rather than the command timing out."""
+    if isinstance(exc, TimeoutError) and getattr(exc, "errno", None) in (60, 110):
+        return True
+    if isinstance(exc, (EOFError, BrokenPipeError, ConnectionResetError)):
+        return True
+    text = str(exc).lower()
+    return any(
+        token in text
+        for token in (
+            "operation timed out",
+            "connection reset",
+            "broken pipe",
+            "not active",
+            "no existing session",
+            "socket is closed",
+            "server connection dropped",
+        )
+    )
+
+
 def check_timeout(end_time, timeout):
     """Raises an exception when current time is greater"""
     if timeout and datetime.datetime.now() >= end_time:
@@ -1303,7 +1324,7 @@ class SSHConnectionManager(object):
         look_for_keys=False,
         private_key_file_path="",
         private_key_password=None,
-        outage_timeout=600,
+        outage_timeout=1800,
     ):
         self.ip_address = ip_address
         self.username = username
@@ -2050,12 +2071,20 @@ class CephNode(object):
             #   - race condition between data read and exit ready
             try:
                 _new_timeout = datetime.datetime.now() + datetime.timedelta(seconds=10)
-                _out += read_stream(channel, _new_timeout, timeout=True)
-                _err += read_stream(channel, _new_timeout, timeout=True, stderr=True)
-            except CommandFailed:
+                _channel_timeout = channel.gettimeout()
+                channel.settimeout(10)
+                if channel.recv_ready():
+                    _out += read_stream(channel, _new_timeout, timeout=True)
+                if channel.recv_stderr_ready():
+                    _err += read_stream(
+                        channel, _new_timeout, timeout=True, stderr=True
+                    )
+            except (CommandFailed, socket.timeout):
                 logger.debug("Encountered a timeout during read post execution.")
             except BaseException as be:
                 logger.debug("Encountered an unknown exception during last read.\n", be)
+            finally:
+                channel.settimeout(_channel_timeout)
 
             _exit = channel.recv_exit_status()
             return _out, _err, _exit, _time
@@ -2067,6 +2096,25 @@ class CephNode(object):
             logger.error("%s failed to execute within %ds.", cmd, timeout)
             raise CommandFailed(tex)
         except BaseException as be:  # noqa
+            if not kw.get("_retried_ssh") and _ssh_session_stale(be):
+                logger.warning(
+                    "SSH session to %s [%s] went stale; reconnecting and retrying %s: %s",
+                    self.hostname,
+                    self.ip_address,
+                    cmd,
+                    be,
+                )
+                try:
+                    self.reconnect()
+                except Exception as rec_exc:
+                    logger.warning(
+                        "SSH reconnect to %s failed: %s", self.ip_address, rec_exc
+                    )
+                    logger.exception(be)
+                    raise CommandFailed(be)
+                retry_kw = dict(kw)
+                retry_kw["_retried_ssh"] = True
+                return self.long_running(**retry_kw)
             logger.exception(be)
             raise CommandFailed(be)
 
@@ -2154,10 +2202,23 @@ class CephNode(object):
             sleep(60)
 
     def reconnect(self):
-        """Re-establish the connections."""
+        """Re-establish SSH, closing any transport that still looks active but is dead."""
         logger.info(f"Re-establishing the connection to {self.ip_address}.")
+        try:
+            self.root_connection.close()
+        except Exception:
+            pass
+        try:
+            self.connection.close()
+        except Exception:
+            pass
         self.root_connection.get_client()
         self.connection.get_client()
+        try:
+            self.rssh_transport().set_keepalive(15)
+            self.ssh_transport().set_keepalive(15)
+        except Exception as exc:
+            logger.debug("Could not set SSH keepalive on %s: %s", self.ip_address, exc)
 
     def __getstate__(self):
         d = dict(self.__dict__)
@@ -2458,7 +2519,7 @@ class CephNode(object):
             installer_url (str): installer repos url
         """
         if base_url.endswith(".repo"):
-            cmd = f"yum-config-manager --add-repo {base_url}"
+            cmd = f"yum config-manager --add-repo {base_url}"
             self.exec_command(sudo=True, cmd=cmd)
 
         else:

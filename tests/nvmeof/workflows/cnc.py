@@ -139,7 +139,7 @@ def apply_cnc_config(gateways, cnc_config=None, enable_logging=True):
                 gw.cnc_enable_logging()
             except Exception as err:
                 LOG.warning(f"CNC logging enable failed on {gw.node.hostname}: {err}")
-        gw.cnc_set_config(**cfg)
+        # gw.cnc_set_config(**cfg)
 
 
 def write_verified_pattern(
