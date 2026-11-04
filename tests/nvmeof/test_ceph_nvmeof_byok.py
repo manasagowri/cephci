@@ -407,6 +407,9 @@ def _add_parent_namespaces(gateway, subsystems, config, passphrases_by_node, rbd
     ns_per_sub = int(config.get("namespaces_per_subsystem", 16))
     size = config.get("image_size", "50G")
     start_sub = int(config.get("resume_namespace_subsystem", 1))
+    # Cap concurrent installer SSH sessions; OpenSSH MaxSessions defaults to 10
+    # and unbounded parallel ns add hits ChannelException(2, 'Connect failed').
+    workers = max(1, int(config.get("ns_add_parallel_workers", 4)))
     existing_rbd = _rbd_image_names(rbd_obj, pool) if rbd_obj else set()
 
     def _add_one(sub, ns_index, ns_map):
@@ -464,10 +467,18 @@ def _add_parent_namespaces(gateway, subsystems, config, passphrases_by_node, rbd
                 f"cnode{sub['num']}: backfilling missing parent namespaces {missing}"
             )
         ns_meta = []
-        with parallel() as p:
+        LOG.info(
+            "Adding %s parent namespaces on %s with max_workers=%s",
+            ns_per_sub,
+            sub["group_nqn"],
+            workers,
+        )
+        with parallel(max_workers=workers) as p:
             for ns_index in range(1, ns_per_sub + 1):
                 p.spawn(_add_one, sub, ns_index, ns_map)
             for result in p:
+                if isinstance(result, Exception):
+                    raise result
                 ns_meta.append(result)
         ns_meta.sort(key=lambda item: item["ns_index"])
         sub["namespaces"] = ns_meta

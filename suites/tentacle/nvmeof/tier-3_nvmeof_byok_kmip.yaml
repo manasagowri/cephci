@@ -373,14 +373,22 @@ tests:
   #       fio_size: 1G
   #       cleanup_prior: true
   #       cleanup_sessions: false
+  #       # short_term: healthy encrypted owners stay put.
+  #       # long_term: equalization is allowed, but not onto a GW where the NS is degraded.
+  #       encrypted_lb_policy: short_term
   #     desc: >
   #       CROSS ENC ALB: enable ALB on 512 encrypted cnode* parents; add 128
   #       LUKS2 albenc NS (4 per subsystem) with a dedicated KMIP key; FIO on
-  #       parents and albenc; for each group2 GW stop all KMIP servers, restart
-  #       the GW, require ANA 255 and degraded=true (empty rbd_image_name) only
-  #       on that GW ns list, peers degraded=false, FIO err=0; start KMIP back,
-  #       restart GW, time how long all 128 albenc NS recover; ALB rebalance,
-  #       IO continues; record and log recovery time per GW
+  #       parents and albenc. For each group2 GW, record load-balancing groups,
+  #       stop all KMIP servers, and restart that GW. Affected NS are
+  #       degraded=true only on the restarted GW and degraded=false on peers.
+  #       short_term: an encrypted NS that was healthy on its owner keeps that
+  #       group. A NS owned by the restarted GW may move off it. long_term:
+  #       equalization moves are allowed except onto the GW where the NS is
+  #       degraded. Groups 64 and 255 are transient. Start KMIP, restart the
+  #       GW, time recovery, then hold or rebalance per encrypted_lb_policy.
+  #       FIO stays err=0. Gateway deletion and ANA location mismatch are not
+  #       part of this scenario.
   #     destroy-cluster: false
   #     module: test_ceph_nvmeof_byok_alb_enc.py
   #     name: Encrypted Namespaces + Auto Load Balancing at Scale CROSS ENC ALB

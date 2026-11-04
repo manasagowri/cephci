@@ -2,10 +2,23 @@
 
 Reuses group2 ``cnode*`` encrypted parents (512). Enables ALB, runs light
 FIO, adds 128 LUKS2 ``albenc_*`` NS with a dedicated KMIP passphrase, then
-for each gateway: destroys only that passphrase, restarts that GW, asserts
-the 128 are ``degraded=true`` / ANA 255 only on that GW's ``ns list``,
-peers show ``degraded=false``, and both FIO jobs stay ``err=0``. Restores
-the key, ``ns reload``, and checks ALB plus IO again.
+for each gateway: stops KMIP, restarts that GW, and checks the load-balancing
+rule for encrypted namespaces.
+
+``encrypted_lb_policy`` selects the oracle (default ``short_term``):
+
+- short term: do not move an encrypted namespace unless it is degraded on
+  the gateway that currently owns it, its ANA group belongs to a gateway
+  that is being deleted, or its location does not match its ANA group.
+  This scenario has no gateway deletion and no location mismatch, so a
+  namespace that was healthy on its current owner must keep that group.
+  A namespace whose owner is the restarted gateway is degraded there, so
+  a move off that gateway is allowed.
+- long term: equalization moves are allowed, but a namespace must not be
+  moved onto a gateway where that same namespace is degraded.
+
+Groups 64 and 255 are transient and are not a passing result. Peers must
+show ``degraded=false``, and both FIO jobs must stay ``err=0``.
 """
 
 import json
@@ -78,6 +91,9 @@ ALBENC_PASSPHRASE_VALUE = "albenc-passwd"
 DEFAULT_ALB_NEW_NS = 128
 DEFAULT_REBALANCE_PERIOD = 60
 DEFAULT_ALB_WAIT_PERIODS = 2
+# 64 is the maintenance group used while a move is in progress. 255 is the
+# older in-progress id some gateway builds still report.
+TRANSIENT_LB_GROUPS = (64, 255)
 
 
 def _image_name(sub_num, ns_index):
@@ -192,6 +208,92 @@ def _lb_group(ns):
 
 def _is_degraded_flag(ns):
     return ns.get("degraded") in (True, "true", "True", 1, "yes")
+
+
+def _encrypted_lb_policy(config):
+    """Return ``short_term`` or ``long_term``.
+
+    Short term refuses equalization moves of encrypted namespaces. Long term
+    allows those moves when the destination is not a gateway on which that
+    namespace is degraded.
+    """
+    policy = str(config.get("encrypted_lb_policy", "short_term")).strip().lower()
+    if policy not in ("short_term", "long_term"):
+        raise ValueError(
+            "encrypted_lb_policy must be short_term or long_term, "
+            f"got {policy!r}"
+        )
+    return policy
+
+
+def _lb_baseline(gateway, records):
+    """Map each record UUID to its settled load-balancing group.
+
+    Raises when a namespace is missing or still on a transient group, so the
+    caller does not treat an in-progress move as the owner.
+    """
+    listed = _listed_by_nqn(gateway, records)
+    baseline = {}
+    unsettled = []
+    for record in records:
+        ns = listed.get(record["nqn"], {}).get(record["image"])
+        if not ns:
+            unsettled.append(f"{record['image']} missing")
+            continue
+        group = _lb_group(ns)
+        if group is None or group in TRANSIENT_LB_GROUPS:
+            unsettled.append(f"{record['image']} ana={group}")
+            continue
+        baseline[_norm_uuid(record.get("uuid"))] = group
+    if unsettled:
+        raise RuntimeError(
+            "LB baseline is not settled:\n" + "\n".join(unsettled[:30])
+        )
+    return baseline
+
+
+def _wait_lb_baseline(gateway, records, timeout=120, delay=5):
+    """Poll until every namespace has left the transient groups."""
+    started = time.time()
+    last = None
+    while True:
+        try:
+            return _lb_baseline(gateway, records)
+        except RuntimeError as exc:
+            last = exc
+            if time.time() - started >= timeout:
+                raise RuntimeError(
+                    f"LB baseline not settled after {int(timeout)}s: {last}"
+                ) from last
+            time.sleep(delay)
+
+
+def _assert_groups_unchanged(gateway, records, baseline, label):
+    """Fail when an encrypted namespace changed groups with no exception.
+
+    Used where no namespace is degraded on its owner, no gateway is being
+    deleted, and locations already match ANA groups. The short-term rule
+    then requires every group to stay put.
+    """
+    listed = _listed_by_nqn(gateway, records)
+    errors = []
+    for record in records:
+        uuid = _norm_uuid(record.get("uuid"))
+        ns = listed.get(record["nqn"], {}).get(record["image"])
+        if not ns:
+            errors.append(f"{record['image']} missing ({label})")
+            continue
+        group = _lb_group(ns)
+        previous = baseline.get(uuid)
+        if group in TRANSIENT_LB_GROUPS or group is None:
+            errors.append(f"{record['image']} still transient ana={group}")
+            continue
+        if group != previous:
+            errors.append(f"{record['image']} lb {previous} -> {group}")
+    if errors:
+        raise RuntimeError(
+            f"{label}: encrypted namespaces moved:\n" + "\n".join(errors[:30])
+        )
 
 
 def _enc_tuple(ns):
@@ -833,22 +935,25 @@ def _assert_albenc_healthy(gateways, records, label):
         )
 
 
-def _assert_degraded_on_restarted(restarted, peers, records):
-    """Assert the expected per-GW degraded view after KMIP-down restart.
+def _assert_degraded_on_restarted(
+    restarted, peers, records, baseline, policy="short_term"
+):
+    """Assert the per-GW degraded view and the encrypted load-balancing rule.
 
-    On the restarted gateway the affected namespaces must have:
-    - ``degraded=true``
-    - ANA group that belongs to one of the *peer* gateways, not the restarted
-      one.  ANA group 255 is only transient; once ALB settles the NS is moved
-      onto an optimised group owned by a peer that still has the bdev open.
+    On the restarted gateway every affected namespace is ``degraded=true``.
+    Peers still have the bdev open and must show ``degraded=false``. Groups
+    64 and 255 are still in progress, so they fail this check and the caller
+    keeps polling.
 
-    Peer gateways are unaffected (they still have the bdev open in memory) and
-    must show ``degraded=false``.
+    ``baseline`` maps namespace UUID to the load-balancing group from before
+    the KMIP stop. ``policy`` is ``short_term`` or ``long_term``. This scenario
+    does not delete a gateway and does not change namespace location, so the
+    only short-term exception is a namespace that is degraded on the gateway
+    that owned it (the restarted gateway).
     """
     errors = []
     host = restarted.node.hostname
     restarted_group = int(restarted.ana_group_id)
-    peer_groups = {int(peer.ana_group_id) for peer in peers}
     # Use UUID-keyed map for the restarted gateway — image names are empty there.
     restarted_uuid_map = _listed_by_uuid(restarted, records)
     # Peers are healthy; image names are present — keep the normal lookup.
@@ -867,13 +972,29 @@ def _assert_degraded_on_restarted(restarted, peers, records):
                 f"{host}: {record['image']} expected degraded=true "
                 f"got degraded={ns.get('degraded')} ana={group}"
             )
-        # ANA group must be a peer group, not the restarted GW's own group.
-        # Allow 255 transiently — only flag if it has settled on the wrong group.
-        if group is not None and group != 255 and group not in peer_groups:
+        if group is None or group in TRANSIENT_LB_GROUPS:
             errors.append(
-                f"{host}: {record['image']} ana={group} should be one of peer "
-                f"groups {sorted(peer_groups)}, not restarted GW group {restarted_group}"
+                f"{host}: {record['image']} ana={group} still transient; "
+                "waiting for a settled load-balancing group"
             )
+        else:
+            previous = baseline.get(uuid)
+            if policy == "short_term":
+                # Healthy on its previous owner: that owner is not the restarted
+                # gateway, so the group must not change. A move onto another
+                # healthy peer is also a failure.
+                if previous != restarted_group and group != previous:
+                    errors.append(
+                        f"{host}: {record['image']} was healthy on group "
+                        f"{previous} and moved to {group}"
+                    )
+            elif previous != restarted_group and group == restarted_group:
+                # Long term may rebalance, but not onto the gateway where this
+                # namespace is degraded.
+                errors.append(
+                    f"{host}: {record['image']} moved from group {previous} "
+                    f"onto restarted group {restarted_group}, where it is degraded"
+                )
         for peer in peers:
             pns = peer_maps[peer].get(record["nqn"], {}).get(record["image"])
             if not pns:
@@ -889,10 +1010,11 @@ def _assert_degraded_on_restarted(restarted, peers, records):
     if errors:
         raise RuntimeError("Per-GW degrade view failed:\n" + "\n".join(errors[:40]))
     LOG.info(
-        "%s: all %s albenc NS degraded, ana in peer groups %s; peers show degraded=false",
+        "%s: %s policy held for %s albenc NS; restarted group %s; peers show degraded=false",
         host,
+        policy,
         len(records),
-        sorted(peer_groups),
+        restarted_group,
     )
 
 
@@ -945,7 +1067,9 @@ def _wait_all_ns_loaded(gateway, records, delay=30):
         time.sleep(delay)
 
 
-def _wait_degraded_view(restarted, peers, records, timeout, delay=10):
+def _wait_degraded_view(
+    restarted, peers, records, timeout, baseline, policy="short_term", delay=10
+):
     """Wait until the restarted GW shows all albenc NS as degraded.
 
     Phase 1 — wait for all NS to finish loading (no timeout: the GW may take
@@ -967,7 +1091,9 @@ def _wait_degraded_view(restarted, peers, records, timeout, delay=10):
     last = None
     while True:
         try:
-            _assert_degraded_on_restarted(restarted, peers, records)
+            _assert_degraded_on_restarted(
+                restarted, peers, records, baseline, policy
+            )
             return
         except Exception as exc:
             last = exc
@@ -1313,7 +1439,10 @@ def run(ceph_cluster: Ceph, **kwargs) -> int:
             raise RuntimeError(
                 "FIO reported IO errors:\n" + "\n".join(parent_errors + albenc_errors)
             )
-        LOG.info("ALB ENC passed: encryption preserved, per-GW ANA 255, FIO err=0")
+        LOG.info(
+            "ALB ENC passed: encryption preserved, %s load-balancing rule held, FIO err=0",
+            _encrypted_lb_policy(config),
+        )
         return 0
     except Exception as err:
         LOG.exception("ALB ENC test failed: %s", err)
@@ -1352,7 +1481,19 @@ def _alb_worker(
     stop_state,
 ):
     reopen = int(config.get("ns_reopen_timeout", DEFAULT_NS_REOPEN_TIMEOUT))
+    policy = _encrypted_lb_policy(config)
+    parent_baseline = _wait_lb_baseline(gateway, records)
     _wait_alb_window(config, "cycle 1 parents")
+    if policy == "short_term":
+        # Parents are healthy, no gateway is being deleted, and locations
+        # match. Equalization must not move them.
+        _assert_groups_unchanged(
+            gateway, records, parent_baseline, "short-term parent hold"
+        )
+    else:
+        validate_auto_loadbalance(
+            orch, nvme_service.nvme_metadata_pool, nvme_service.group
+        )
     _assert_fio_healthy(clients, PARENT_JOB, PARENT_FIO_LOG, "after parent ALB cycle")
     snaps = _parent_snapshots(gateway, records)
     LOG.info("Snapshot encryption attrs for %s parent NS", len(snaps))
@@ -1381,7 +1522,12 @@ def _alb_worker(
     for record in albenc:
         _apply_ns_mask(gateway, record)
     paths_by_host = _map_albenc(mapped, albenc)
+    albenc_baseline = _wait_lb_baseline(gateway, albenc)
     _wait_alb_window(config, "albenc initial placement")
+    if policy == "short_term":
+        _assert_groups_unchanged(
+            gateway, albenc, albenc_baseline, "short-term albenc hold"
+        )
     _assert_albenc_healthy(gateways, albenc, "after albenc ALB spread")
     _prepare_albenc_jobs(
         mapped,
@@ -1401,9 +1547,11 @@ def _alb_worker(
         LOG.info("ALB ENC degrade iteration on %s", host)
 
         # Stop all KMIP servers so the restarted gateway cannot fetch the
-        # albenc passphrase and loads the NS degraded (empty rbd_image_name,
-        # ANA 255).  Peer gateways remain healthy because they already have
-        # the bdev open in memory.
+        # albenc passphrase and loads those namespaces degraded. Peer gateways
+        # remain healthy because they already have the bdev open in memory.
+        # Snapshot owners first. The short-term rule must leave every namespace
+        # that is healthy on its current gateway on that same group.
+        degrade_baseline = _wait_lb_baseline(gateway, albenc)
         _stop_kmip_servers(kmip_nodes)
         _restart_one_gateway(nvme_service, restarted, config)
         _wait_degraded_view(
@@ -1411,6 +1559,8 @@ def _alb_worker(
             peers,
             albenc,
             int(config.get("degrade_timeout", 600)),
+            degrade_baseline,
+            policy,
         )
         _assert_parent_encryption(
             gateway, records, snaps, f"after restart {host}"
@@ -1442,11 +1592,20 @@ def _alb_worker(
             elapsed,
             len(albenc),
         )
+        recovered_baseline = _wait_lb_baseline(gateway, albenc)
         _wait_alb_window(config, f"after recovery {host}")
         _assert_albenc_healthy(gateways, albenc, f"after recovery {host}")
-        validate_auto_loadbalance(
-            orch, nvme_service.nvme_metadata_pool, nvme_service.group
-        )
+        if policy == "long_term":
+            validate_auto_loadbalance(
+                orch, nvme_service.nvme_metadata_pool, nvme_service.group
+            )
+        else:
+            _assert_groups_unchanged(
+                gateway,
+                albenc,
+                recovered_baseline,
+                f"short-term hold after recovery {host}",
+            )
         _assert_fio_healthy(
             clients,
             PARENT_JOB,
