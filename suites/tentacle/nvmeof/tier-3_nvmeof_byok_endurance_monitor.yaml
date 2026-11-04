@@ -1,0 +1,63 @@
+# Two-Phase BYOK Endurance Test:
+#   Phase 1: Fast fill cluster to ~75% capacity in ~1-2 hours (sequential 1M writes).
+#   Phase 2: 8-hour mixed read-write workload pacing writes from 75% -> 80% with parallel reads.
+#
+# Workload & Monitoring:
+#   - Paced writes slowly fill the remaining ~5% cluster capacity steadily across the 8-hour window.
+#   - Parallel read IOs (70% read mix) run simultaneously against mapped BYOK namespaces.
+#   - Background monitor polls every 60s throughout both phases:
+#       * Latency drift (read/write latencies over time)
+#       * Error rates & Ceph cluster health (ceph health detail)
+#       * OSD stability & status (ceph osd stat)
+#       * Gateway daemon stability & SPDK process health
+#       * Physical NVMe drive temperature & thermal throttling (nvme smart-log)
+#       * Metric stream logged to /tmp/byok_endurance_metrics.jsonl
+#   - At test completion, aggregates all samples into /tmp/byok_endurance_summary.json with detailed report.
+#
+# Pre-requisite:
+#   Run after BYOK scale setup (or with --reuse against existing cluster):
+#   conf/tentacle/nvmeof/ceph_nvmeof_byok_baremetal.yaml
+
+tests:
+  - test:
+      abort-on-fail: true
+      config:
+        gw_nodes:
+          - node9
+          - node10
+          - node11
+          - node12
+        rbd_pool: rbd
+        nvme_metadata_pool: rbd
+        gw_group: group2
+        install: false
+        do_not_create_pool: true
+        do_not_create_image: true
+        rep-pool-only: true
+        rep_pool_config:
+          pool: rbd
+        subsystems: 32
+        namespaces_per_subsystem: 16
+        image_size: 50G
+        listener_port: 4420
+        fill_cluster: true
+        fast_fill_target_pct: 75
+        final_fill_target_pct: 80
+        fill_bs: 1M
+        iodepth: 16
+        rwmixread: 70
+        continuous_bs: 64k
+        paced_io_runtime: 28800
+        poll_interval: 60
+        ns_masking: true
+        resume_from: io
+        masking_sample_ns: 2
+        masking_sample_runtime: 15
+      desc: >
+        Fast fill cluster to 75% capacity in 1-2 hours, then run 8-hour mixed read/write
+        workload slowly pacing writes from 75% to 80% while running parallel read IOs,
+        continuously monitoring latency drift, errors, NVMe thermal throttling,
+        Gateway and OSD stability.
+      destroy-cluster: false
+      module: test_ceph_nvmeof_byok_endurance_monitor.py
+      name: NVMeoF BYOK Fast 75% Fill + 8h Paced 80% Mixed IO Monitoring Test

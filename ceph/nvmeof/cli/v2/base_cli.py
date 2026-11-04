@@ -37,9 +37,18 @@ KEY_MAP = {
     "w-megabytes-per-second": "w_mbytes_per_second",
     "level": "log_level",
     "auto-visible": "auto_visible",
-    # BYOK LUKS encryption (9.2+)
-    # The CLI flags use hyphens: --encryption-format, --encryption-algorithm, --key-id
-    # No translation needed — pass through as-is.
+    # BYOK LUKS encryption (9.2+) — hyphen CLI flags pass through; snake_case
+    # callers are remapped. KMIP endpoint helpers use name/address/port.
+    "encryption-format": "encryption_format",
+    "encryption_format": "encryption_format",
+    "key-id": "key_id",
+    "key_id": "key_id",
+    "kmip-name": "name",
+    "kmip_name": "name",
+    "kmip-address": "address",
+    "kmip_address": "address",
+    "kmip-port": "port",
+    "kmip_port": "port",
 }
 
 
@@ -84,7 +93,10 @@ class BaseCLI:
         if self.mtls:
             pass
 
-        cmd_args = kwargs.get("args", {})
+        cmd_args = kwargs.get("args", {}) or {}
+        positional_args = kwargs.get("positional_args") or kwargs.get("pos_args") or []
+        if isinstance(positional_args, str):
+            positional_args = [positional_args]
         ceph_version = self.get_ceph_version()
 
         # Gateway group
@@ -109,9 +121,15 @@ class BaseCLI:
             self.__local_mtls_cert_path(),
             entity,
             action,
-            config_dict_to_string(cmd_args),
-            config_dict_to_string(base_cmd_args),
         ]
+        command.extend(str(arg) for arg in positional_args)
+        command.extend(
+            [
+                config_dict_to_string(cmd_args),
+                config_dict_to_string(base_cmd_args),
+            ]
+        )
+        command = [part for part in command if part]
         # As a alternative to bug reported https://ibm-ceph.atlassian.net/browse/IBMCEPH-16456,
         # Which is intermittent and happens when the NVMe CLI is executed on a gateway node.
         # we are using a retry mechanism to handle the connection error.

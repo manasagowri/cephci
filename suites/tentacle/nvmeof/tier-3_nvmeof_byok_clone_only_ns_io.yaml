@@ -1,0 +1,89 @@
+# Clone-only-NS BYOK IO on tala group2 (parents never added as NVMe NS).
+#
+# Cluster configuration:
+#   conf/tentacle/nvmeof/ceph_nvmeof_byok_baremetal.yaml
+#
+# Creates 16 stacked-LUKS clones per existing group2 subsystem (512 total).
+# Parents are RBD-encrypted only; only the clones are ``ns add``ed. RBD
+# prepare is parallel per subsystem; ns add is serial with a 10s settle
+# and gateway PID check after each clone so peer OMAP apply can finish
+# before the next origin encryption_load2. Expect ~10-11h if no abort.
+# Then both clients run light FIO (one job each, iodepth 4, size 1G) for
+# 10 minutes on the clone devices only. After IO all group2 GW daemons
+# are restarted; every clone NS must re-open on every gateway with the
+# stacked (clone, parent) encryption_entries chain.
+#
+# image_size is 20G. FIO size is capped at 1G so a 10-minute run does not
+# fill the cluster (full 20G fill of 512 clones is ~10 TiB logical).
+#
+# To delete leftover orphan_ parent images, snaps, and *_clone images
+# (and any clone NVMe namespaces) from a previous run first, set:
+#   cleanup_orphan_images: true
+# That only touches names starting with orphan_; BYOK parent namespaces
+# (byok_c*) are left alone.
+#
+# To rerun FIO only against clones already added, set:
+#   resume_from: io
+# That skips RBD create, ns add, and masking; reconnects both clients;
+# and starts FIO. Do not combine with cleanup_orphan_images.
+#
+# Run with --reuse against the existing tala cluster (group2 GWs node9–12).
+
+tests:
+  - test:
+      abort-on-fail: true
+      config:
+        gw_nodes:
+          - node9
+          - node10
+          - node11
+          - node12
+        rbd_pool: rbd
+        nvme_metadata_pool: rbd
+        gw_group: group2
+        install: false
+        do_not_create_pool: true
+        do_not_create_image: true
+        rep-pool-only: true
+        rep_pool_config:
+          pool: rbd
+        subsystems: 32
+        namespaces_per_subsystem: 16
+        gw_max_namespaces: 4096
+        max_namespaces_per_subsystem: 512
+        max_namespaces_with_netmask: 4096
+        image_size: 20G
+        kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
+        subsystems_per_kmip: 2
+        enable_ha: true
+        listener_port: 4420
+        clone_only_ns: true
+        clone_count: 512
+        clones_per_subsystem: 16
+        rbd_parallel_workers: 8
+        ns_add_settle_sec: 10
+        check_gw_per_clone: true
+        skip_io: false
+        io_runtime: 600
+        io_type: randrw
+        bs: 64k
+        iodepth: 4
+        fio_size: 1G
+        gw_poll_interval: 15
+        save_gateway_logs: true
+        ns_reopen_tries: 120
+        ns_reopen_delay: 45
+        # Uncomment to delete leftover orphan_ parents, snaps, and clones
+        # from a previous clone-only-NS run before creating a new set:
+        cleanup_orphan_images: true
+        # Uncomment to skip create/ns add/masking and only reconnect + FIO:
+        # resume_from: io
+        # Uncomment to skip the post-IO gateway restart + key-chain check:
+        # skip_gw_restart: true
+      desc: >
+        Create 512 clone-only-NS stacked-LUKS clones on existing group2
+        subsystems, run light FIO, restart all GWs, and confirm clone NS
+        re-open with stacked encryption_entries
+      destroy-cluster: false
+      module: test_ceph_nvmeof_byok_clone_io.py
+      name: NVMeoF BYOK clone-only-NS IO

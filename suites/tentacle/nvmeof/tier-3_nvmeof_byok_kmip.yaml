@@ -1,0 +1,468 @@
+# Tier-Level: 3
+# NVMeoF BYOK (KMIP) scale on tala baremetal
+#
+# Cluster configuration:
+#   conf/tentacle/nvmeof/ceph_nvmeof_byok_baremetal.yaml
+#
+# Storage note: default 32 subsystems * 16 parent NS * 50G plus one clone
+# each is ~51 TB. Override image_size in the BYOK test config if needed.
+#
+# Reuse an already-deployed cluster by skipping the bootstrap tests or
+# running with --reuse against the existing tala cluster.
+#
+# After BYOK scale: rolling one-at-a-time GW restart while FIO runs
+# (test_ceph_nvmeof_byok_kmip_gw_restart.py), then CROSS ENC (new
+# DHCHAP subsystems + 256 LUKS2 NS), then HA ENC failover/failback
+# at 512 encrypted parents, then CROSS ENC ALB (128 new LUKS2 NS +
+# per-GW KMIP degrade), then feature tests.
+
+tests:
+  # - test:
+  #     abort-on-fail: true
+  #     module: install_prereq.py
+  #     name: install ceph pre-requisites
+
+  # - test:
+  #     abort-on-fail: true
+  #     config:
+  #       verify_cluster_health: true
+  #       steps:
+  #         - config:
+  #             command: bootstrap
+  #             service: cephadm
+  #             args:
+  #               mon-ip: node1
+  #               registry-url: registry.redhat.io
+  #               allow-fqdn-hostname: true
+  #               log-to-file: true
+  #         - config:
+  #             command: add_hosts
+  #             service: host
+  #             args:
+  #               attach_ip_address: true
+  #               labels: apply-all-labels
+  #         - config:
+  #             command: apply
+  #             service: mgr
+  #             args:
+  #               placement:
+  #                 label: mgr
+  #         - config:
+  #             command: apply
+  #             service: mon
+  #             args:
+  #               placement:
+  #                 label: mon
+  #         - config:
+  #             command: apply
+  #             service: osd
+  #             args:
+  #               all-available-devices: true
+  #     desc: RHCS cluster deployment using cephadm
+  #     destroy-cluster: false
+  #     module: test_cephadm.py
+  #     name: deploy cluster
+
+  # - test:
+  #     abort-on-fail: true
+  #     config:
+  #       command: add
+  #       id: client.1
+  #       nodes:
+  #         - node26
+  #         - node27
+  #       install_packages:
+  #         - ceph-common
+  #       copy_admin_keyring: true
+  #     desc: Setup clients for NVMeoF BYOK tests
+  #     destroy-cluster: false
+  #     module: test_client.py
+  #     name: configure Ceph client for NVMe tests
+  #     polarion-id: CEPH-83573758
+
+  # - test:
+  #     abort-on-fail: true
+  #     config:
+  #       gw_nodes:
+  #         - node9
+  #         - node10
+  #         - node11
+  #         - node12
+  #       rbd_pool: rbd
+  #       nvme_metadata_pool: rbd
+  #       gw_group: group2
+  #       install: false
+  #       do_not_create_pool: true
+  #       do_not_create_image: true
+  #       rep-pool-only: true
+  #       rep_pool_config:
+  #         pool: rbd
+  #       network_mask: 10.64.0.196/30
+  #       subsystems: 32
+  #       namespaces_per_subsystem: 16
+  #       gw_max_namespaces: 4096
+  #       max_namespaces_per_subsystem: 512
+  #       max_namespaces_with_netmask: 4096
+  #       max_namespaces: 512
+  #       image_size: 50G
+  #       kmip_image: quay.io/gdidi/kmip/kmip-server:latest
+  #       kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
+  #       kmip_port: 5696
+  #       subsystems_per_kmip: 2
+  #       enable_ha: true
+  #       listener_port: 4420
+  #       # Keep clones already on the subsystem; retry only missing ones.
+  #       # Remove resume_from after a full successful clone+verify run.
+  #       resume_from: clones
+  #     desc: >
+  #       NVMeoF BYOK scale: 16 KMIP servers, 32 group2 subsystems with
+  #       auto-listeners, encrypted LUKS1/LUKS2 namespaces and clones
+  #     destroy-cluster: false
+  #     module: test_ceph_nvmeof_byok.py
+  #     name: NVMeoF BYOK KMIP scale
+
+  # - test:
+  #     abort-on-fail: true
+  #     config:
+  #       gw_nodes:
+  #         - node9
+  #         - node10
+  #         - node11
+  #         - node12
+  #       rbd_pool: rbd
+  #       nvme_metadata_pool: rbd
+  #       gw_group: group2
+  #       install: false
+  #       do_not_create_pool: true
+  #       do_not_create_image: true
+  #       rep-pool-only: true
+  #       rep_pool_config:
+  #         pool: rbd
+  #       subsystems: 32
+  #       namespaces_per_subsystem: 16
+  #       expected_parent_ns: 512
+  #       cleanup_orphan_images: true
+  #       enable_ha: true
+  #       listener_port: 4420
+  #       io_after_runtime: 60
+  #       fio_max_runtime: 28800
+  #       ns_reopen_timeout: 5400
+  #       io_type: randrw
+  #       bs: 64k
+  #       iodepth: 4
+  #       fio_size: 1G
+  #       gw_restart_delay: 30
+  #     desc: >
+  #       Light FIO on the 512 encrypted parent namespaces; restart each
+  #       group2 gateway one at a time; require FIO err=0 throughout; ns list
+  #       the restarted GW and a peer and fail if both show degraded NS;
+  #       record time until the restarted GW lists every namespace again
+  #     destroy-cluster: false
+  #     module: test_ceph_nvmeof_byok_kmip_gw_restart.py
+  #     name: KMIP Passphrase Fetch Concurrency GW Restart Stress
+
+  # - test:
+  #     abort-on-fail: true
+  #     config:
+  #       gw_nodes:
+  #         - node9
+  #         - node10
+  #         - node11
+  #         - node12
+  #       rbd_pool: rbd
+  #       nvme_metadata_pool: rbd
+  #       gw_group: group2
+  #       install: false
+  #       do_not_create_pool: true
+  #       do_not_create_image: true
+  #       rep-pool-only: true
+  #       rep_pool_config:
+  #         pool: rbd
+  #       subsystems: 32
+  #       namespaces_per_subsystem: 16
+  #       subsystems_per_kmip: 2
+  #       kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
+  #       kmip_port: 5696
+  #       enable_ha: true
+  #       listener_port: 4420
+  #       delete_settle_sec: 5
+  #     desc: >
+  #       Delete all 512 encrypted BYOK parent namespaces via ns del
+  #       (RBD images are preserved) then re-add every namespace pointing
+  #       at the existing encrypted RBD image (no --rbd-create-image).
+  #       Verifies subsystems are empty after deletion and that every
+  #       namespace reappears in a non-degraded state after re-add.
+  #     destroy-cluster: false
+  #     module: test_ceph_nvmeof_byok_ns_readd.py
+  #     name: BYOK ns del and re-add 512 namespaces reusing existing RBD images
+
+  # Use the entry below when namespaces are ALREADY deleted and you only want
+  # to add them back from the existing encrypted RBD images (no delete phase).
+  - test:
+      abort-on-fail: true
+      config:
+        gw_nodes:
+          - node9
+          - node10
+          - node11
+          - node12
+        rbd_pool: rbd
+        nvme_metadata_pool: rbd
+        gw_group: group2
+        install: false
+        do_not_create_pool: true
+        do_not_create_image: true
+        rep-pool-only: true
+        rep_pool_config:
+          pool: rbd
+        subsystems: 32
+        namespaces_per_subsystem: 16
+        subsystems_per_kmip: 2
+        kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
+        kmip_port: 5696
+        enable_ha: true
+        listener_port: 4420
+        add_only: true   # skip snapshot-from-ns-list and delete phase
+      desc: >
+        Re-add all 512 encrypted BYOK parent namespaces directly from the
+        existing encrypted RBD images using KMIP to resolve key UUIDs.
+        No delete phase is run.  Safe to re-run multiple times (idempotent).
+      destroy-cluster: false
+      module: test_ceph_nvmeof_byok_ns_readd.py
+      name: BYOK ns add-only 512 namespaces from existing RBD images (no delete)
+
+  # - test:
+  #     abort-on-fail: true
+  #     config:
+  #       gw_nodes:
+  #         - node9
+  #         - node10
+  #         - node11
+  #         - node12
+  #       rbd_pool: rbd
+  #       nvme_metadata_pool: rbd
+  #       gw_group: group2
+  #       install: false
+  #       do_not_create_pool: true
+  #       do_not_create_image: true
+  #       rep-pool-only: true
+  #       rep_pool_config:
+  #         pool: rbd
+  #       network_mask: 10.64.0.196/30
+  #       subsystems: 32
+  #       namespaces_per_subsystem: 8
+  #       image_size: 5G
+  #       serial_base: 100
+  #       nqn_prefix: nqn.2016-06.io.spdk:crossenc
+  #       subsystems_per_kmip: 2
+  #       kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
+  #       kmip_port: 5696
+  #       inband_auth_mode: bidirectional
+  #       ensure_encryption: false
+  #       enable_ha: true
+  #       listener_port: 4420
+  #       io_after_runtime: 60
+  #       fio_max_runtime: 28800
+  #       ns_reopen_timeout: 5400
+  #       io_type: randwrite
+  #       verify: crc32c
+  #       bs: 64k
+  #       iodepth: 4
+  #       fio_size: 1G
+  #       gw_restart_delay: 30
+  #       dhchap_settle_sec: 3
+  #       dhchap_host_add_tries: 5
+  #       bad_dhchap_subsystems: 10
+  #       cleanup_prior: true
+  #     desc: >
+  #       CROSS ENC: remove leftover crossenc DHCHAP subsystems/NS/images
+  #       without touching cnode*; copy encryption PEM to group2 GWs, apply
+  #       enable_encryption + encryption_key_path, orch redeploy (apply
+  #       does not bounce daemons), then 32 new subsystems with
+  #       bidirectional DHCHAP (unique host key per subsystem), 8 LUKS2
+  #       NS each (256) on existing KMIP endpoints; FIO write+verify;
+  #       restart GW1 and time DHCHAP reconnect plus KMIP re-fetch;
+  #       reject a wrong DHCHAP key on 10 NQNs without affecting
+  #       adjacent sessions
+  #     destroy-cluster: false
+  #     module: test_ceph_nvmeof_byok_cross_enc.py
+  #     name: Encrypted Namespaces + In-Band Authentication DHCHAP at Scale CROSS ENC
+
+  # - test:
+  #     abort-on-fail: true
+  #     config:
+  #       gw_nodes:
+  #         - node9
+  #         - node10
+  #         - node11
+  #         - node12
+  #       rbd_pool: rbd
+  #       nvme_metadata_pool: rbd
+  #       gw_group: group2
+  #       install: false
+  #       do_not_create_pool: true
+  #       do_not_create_image: true
+  #       rep-pool-only: true
+  #       rep_pool_config:
+  #         pool: rbd
+  #       subsystems: 32
+  #       namespaces_per_subsystem: 16
+  #       expected_parent_ns: 512
+  #       subsystems_per_kmip: 2
+  #       kmip_image: quay.io/gdidi/kmip/kmip-server:latest
+  #       kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
+  #       kmip_port: 5696
+  #       kmip_standby_port: 5697
+  #       cleanup_orphan_images: true
+  #       enable_ha: true
+  #       listener_port: 4420
+  #       failover_timeout: 300
+  #       ns_reopen_timeout: 5400
+  #       fio_max_runtime: 28800
+  #       gw_failover_delay: 30
+  #       io_type: randrw
+  #       bs: 64k
+  #       iodepth: 4
+  #       fio_size: 1G
+  #     desc: >
+  #       HA ENC v1: cleanup leftover orphan_ clones; add a second KMIP
+  #       endpoint (same server name, standby IP) with mirrored key uuids;
+  #       light FIO on 512 encrypted parents; systemctl stop GW1 and time
+  #       ANA failover; start GW1 and time failback plus KMIP re-fetch;
+  #       repeat with KMIP-1 stopped so IO continues via the standby
+  #       endpoint
+  #     destroy-cluster: false
+  #     module: test_ceph_nvmeof_byok_ha_enc.py
+  #     name: HA Failover Failback at Scale with Encrypted Namespaces HA ENC
+
+  # - test:
+  #     abort-on-fail: true
+  #     config:
+  #       gw_nodes:
+  #         - node9
+  #         - node10
+  #         - node11
+  #         - node12
+  #       rbd_pool: rbd
+  #       nvme_metadata_pool: rbd
+  #       gw_group: group2
+  #       install: false
+  #       do_not_create_pool: true
+  #       do_not_create_image: true
+  #       rep-pool-only: true
+  #       rep_pool_config:
+  #         pool: rbd
+  #       subsystems: 32
+  #       namespaces_per_subsystem: 16
+  #       expected_parent_ns: 512
+  #       alb_new_namespaces: 128
+  #       image_size: 5G
+  #       subsystems_per_kmip: 2
+  #       kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
+  #       kmip_port: 5696
+  #       enable_ha: true
+  #       listener_port: 4420
+  #       rebalance_period_sec: 60
+  #       alb_wait_periods: 2
+  #       degrade_timeout: 600
+  #       ns_reopen_timeout: 5400
+  #       fio_max_runtime: 28800
+  #       io_type: randrw
+  #       bs: 64k
+  #       iodepth: 4
+  #       fio_size: 1G
+  #       cleanup_prior: true
+  #       cleanup_sessions: false
+  #     desc: >
+  #       CROSS ENC ALB: enable ALB on 512 encrypted cnode* parents; add 128
+  #       LUKS2 albenc NS (4 per subsystem) with a dedicated KMIP key; FIO on
+  #       parents and albenc; for each group2 GW stop all KMIP servers, restart
+  #       the GW, require ANA 255 and degraded=true (empty rbd_image_name) only
+  #       on that GW ns list, peers degraded=false, FIO err=0; start KMIP back,
+  #       restart GW, time how long all 128 albenc NS recover; ALB rebalance,
+  #       IO continues; record and log recovery time per GW
+  #     destroy-cluster: false
+  #     module: test_ceph_nvmeof_byok_alb_enc.py
+  #     name: Encrypted Namespaces + Auto Load Balancing at Scale CROSS ENC ALB
+
+  # - test:
+  #     abort-on-fail: true
+  #     config:
+  #       gw_nodes:
+  #         - node9
+  #         - node10
+  #         - node11
+  #         - node12
+  #       rbd_pool: rbd
+  #       nvme_metadata_pool: rbd
+  #       gw_group: group2
+  #       install: false
+  #       do_not_create_pool: true
+  #       do_not_create_image: true
+  #       rep-pool-only: true
+  #       rep_pool_config:
+  #         pool: rbd
+  #       subsystems: 32
+  #       namespaces_per_subsystem: 16
+  #       image_size: 50G
+  #       subsystems_per_kmip: 2
+  #       kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
+  #       kmip_port: 5696
+  #       enable_ha: true
+  #       listener_port: 4420
+  #       osd_out_duration: 90
+  #       recovery_timeout: 1800
+  #       simulate_disk_failure: false
+  #       fio_max_runtime: 28800
+  #       io_type: randrw
+  #       bs: 64k
+  #       iodepth: 4
+  #       fio_size: 1G
+  #       cleanup_prior: true
+  #       cleanup_sessions: false
+  #     desc: >
+  #       OSD failure during I/O on NVMeoF BYOK: mark an OSD out / simulate disk failure
+  #       during active client I/O on encrypted parent namespaces; observe latency/throughput
+  #       impact, recovery and backfill progress, and verify I/O continuity.
+  #     destroy-cluster: false
+  #     module: test_ceph_nvmeof_byok_osd_failure.py
+  #     name: OSD Failure and Recovery During IO on BYOK
+
+  # - test:
+  #     abort-on-fail: true
+  #     config:
+  #       gw_nodes:
+  #         - node9
+  #         - node10
+  #         - node11
+  #         - node12
+  #       rbd_pool: rbd
+  #       nvme_metadata_pool: rbd
+  #       gw_group: group2
+  #       install: false
+  #       do_not_create_pool: true
+  #       do_not_create_image: true
+  #       rep-pool-only: true
+  #       rep_pool_config:
+  #         pool: rbd
+  #       subsystems: 32
+  #       namespaces_per_subsystem: 16
+  #       image_size: 50G
+  #       kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
+  #       subsystems_per_kmip: 2
+  #       enable_ha: true
+  #       listener_port: 4420
+  #       run_io: false
+  #       feature_test:
+  #         fio_fill_percent: 50
+  #         fio_subsystems: 2
+  #         masking_subsystems: 2
+  #         ns_per_subsystem: 4
+  #         dhchap_extra_ns: 2
+  #         ha_subsystems: 2
+  #     desc: >
+  #       BYOK feature tests on existing encrypted namespaces: FIO fill,
+  #       namespace masking, DHCHAP, and HA during IO
+  #     destroy-cluster: false
+  #     module: test_ceph_nvmeof_byok_features.py
+  #     name: NVMeoF BYOK feature tests

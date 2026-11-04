@@ -318,6 +318,37 @@ class NVMeService:
         if wait_sec:
             time.sleep(wait_sec)
 
+    def restart(self, wait_sec=30):
+        """Restart all NVMe-oF daemons in this gateway group."""
+        if not self.service_name:
+            raise RuntimeError("NVMe-oF service name not set; deploy the service first")
+        orch = Orch(self.ceph_cluster, **{})
+        cmd = f"ceph orch restart {self.service_name}"
+        LOG.info("Restarting NVMe-oF service: %s", cmd)
+        orch.shell(args=[cmd])
+        if wait_sec:
+            time.sleep(wait_sec)
+
+    def restart_daemon(self, gateway, wait_sec=5):
+        """Restart one NVMe-oF gateway daemon via ``ceph orch daemon restart``."""
+        if not gateway.daemon_name:
+            gateway.load_gateway_info()
+        daemon = gateway.daemon_name
+        if not daemon:
+            raise RuntimeError(
+                f"No daemon name for gateway {gateway.node.hostname}"
+            )
+        orch = Orch(self.ceph_cluster, **{})
+        cmd = f"ceph orch daemon restart {daemon}"
+        LOG.info(
+            "Restarting NVMe-oF daemon %s on %s",
+            daemon,
+            gateway.node.hostname,
+        )
+        orch.shell(args=[cmd])
+        if wait_sec:
+            time.sleep(wait_sec)
+
     def wait_for_gateways_ready(self, timeout=300, interval=10):
         """Poll each gateway until gateway_initialization_over is True.
 

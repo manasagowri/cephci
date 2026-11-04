@@ -127,7 +127,7 @@ class Package(Cli):
         Args:
             repo (str): repo to be enabled
         """
-        cmd = f"yum-config-manager --add-repo {repo}"
+        cmd = f"yum config-manager --add-repo {repo}"
         out = self.execute(sudo=True, cmd=cmd)
         if isinstance(out, tuple):
             return out[0].strip()
