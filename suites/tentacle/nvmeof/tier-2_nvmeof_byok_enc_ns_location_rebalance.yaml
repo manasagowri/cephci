@@ -1,0 +1,154 @@
+# IBMCEPH-19516: encrypted NS location rebalance — 9.1 released repro
+# cluster configuration: conf/tentacle/nvmeof/ceph_nvmeof_2GW_1Client.yaml
+# inventory: RHEL 9.x (9.1 released images)
+#
+# Builds (from qe-ceph-manifest ibm/9.1.yaml released + sister chats):
+#   Ceph 20.2.1-405 / ceph-9-rhel9:v9.9.1-28284 / nvmeof-rhel9:v9.9.1-25071
+#
+# expect_encrypted_ns_rebalance: false → must observe stuck / encrypted block
+---
+tests:
+
+  - test:
+      abort-on-fail: true
+      module: install_prereq.py
+      name: install ceph pre-requisites
+
+  - test:
+      abort-on-fail: true
+      config:
+        verify_cluster_health: true
+        steps:
+          - config:
+              command: bootstrap
+              service: cephadm
+              args:
+                mon-ip: node1
+                registry-url: cp.icr.io
+                allow-fqdn-hostname: true
+                allow-overwrite: true
+                log-to-file: true
+          - config:
+              command: add_hosts
+              service: host
+              args:
+                attach_ip_address: true
+                labels: apply-all-labels
+          - config:
+              command: apply
+              service: mgr
+              args:
+                placement:
+                  label: mgr
+          - config:
+              command: apply
+              service: mon
+              args:
+                placement:
+                  label: mon
+          - config:
+              command: apply
+              service: osd
+              args:
+                all-available-devices: true
+      desc: IBM Ceph 9.1 cluster deployment using cephadm
+      destroy-cluster: false
+      module: test_cephadm.py
+      name: deploy cluster
+
+  - test:
+      abort-on-fail: true
+      config:
+        command: add
+        id: client.1
+        nodes:
+          - node10
+        copy_admin_keyring: true
+        install_packages:
+          - ceph-common
+          - nvme-cli
+          - fio
+      desc: Setup client for NVMe-oF BYOK IBMCEPH-19516 tests
+      destroy-cluster: false
+      module: test_client.py
+      name: configure Ceph client for NVMe BYOK tests
+
+  - test:
+      abort-on-fail: true
+      config:
+        command: setup
+        initiator_node: node10
+        gw_nodes:
+          - node5
+          - node6
+        use_dummy_kmip: true
+        kmip_port: 5696
+        kmip_server_image: quay.io/gdidi/kmip/kmip-server:latest
+        kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
+        luks_combos: []
+      desc: >
+        Start a dummy KMIP server on the initiator node, copy certs to GW
+        hosts, and stash the handle for IBMCEPH-19516.
+      destroy-cluster: false
+      module: test_nvmeof_byok_kmip_setup.py
+      name: setup dummy KMIP server for BYOK tests
+
+  - test:
+      abort-on-fail: false
+      config:
+        install: true
+        spec_deployment: true
+        rbd_pool: rbd
+        do_not_create_image: true
+        rep-pool-only: true
+        rep_pool_config:
+          pool: rbd
+        gw_group: group
+        gw_nodes:
+          - node5
+          - node6
+        listener_port: 4420
+        initiator_node: node10
+        bdev_size: 2G
+        use_dummy_kmip: true
+        kmip_port: 5696
+        kmip_server_image: quay.io/gdidi/kmip/kmip-server:latest
+        kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
+        # 9.1 repro: false. 9.2z1 / fixed builds: true.
+        expect_encrypted_ns_rebalance: false
+        location_site_a: site-A
+        location_site_b: site-B
+        rebalance_timeout_sec: 900
+        rebalance_poll_sec: 60
+        luks_combos:
+          - key_id: key-id-19516
+            format: luks2
+            algo: aes256
+        subsystems:
+          - nqn: nqn.2016-06.io.spdk:cnode-19516
+            no-group-append: true
+            allow_host: "*"
+            listeners:
+              - node5
+              - node6
+        cleanup:
+          - subsystems
+          - pool
+          - gateway
+      desc: >
+        IBMCEPH-19516 9.1 repro: set GW locations site-A/site-B, add encrypted
+        NS at site-A plus plain NS mix, change_location to site-B, and assert
+        encrypted NS stays stuck (or journal shows namespace is encrypted).
+      destroy-cluster: false
+      module: test_ceph_nvmeof_byok_encrypted_ns_location_rebalance.py
+      name: IBMCEPH-19516 encrypted NS location rebalance
+      polarion-id: IBMCEPH-19516
+
+  - test:
+      abort-on-fail: false
+      config:
+        command: teardown
+      desc: Tear down suite-level dummy KMIP server
+      destroy-cluster: false
+      module: test_nvmeof_byok_kmip_setup.py
+      name: teardown dummy KMIP server for BYOK tests
