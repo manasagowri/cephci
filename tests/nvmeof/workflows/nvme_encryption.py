@@ -39,6 +39,8 @@ def add_encrypted_namespace(
     size="2G",
     rbd_create_image=True,
     rbd_image=None,
+    location=None,
+    load_balancing_group=None,
 ):
     """Add one LUKS-encrypted namespace to a subsystem.
 
@@ -48,6 +50,8 @@ def add_encrypted_namespace(
           --encryption_algorithm <luks_algo>
           --key_id <key_id>
           [--create-image --size <size>]
+          [--location <location>]
+          [--load-balancing-group <ana_id>]
 
     The KEY_MAP in base_cli.py translates the hyphen-form config keys used here
     to the underscore-form CLI flags automatically.
@@ -63,6 +67,8 @@ def add_encrypted_namespace(
         rbd_create_image (bool): True → let the GW create the RBD image.
                                  False → use an existing image (delete/reopen flow).
         rbd_image (str|None): Image name to use. Auto-generated when None.
+        location (str|None): Optional NS location (e.g. site-A / site-B).
+        load_balancing_group (int|str|None): Optional ANA / LB group id.
 
     Returns:
         str: The rbd_image_name used (needed for subsequent verify/delete calls).
@@ -80,14 +86,21 @@ def add_encrypted_namespace(
         ns_args["encryption-algorithm"] = luks_algo
         ns_args["rbd-create-image"] = True
         ns_args["rbd-image-size"] = size
+    if location is not None:
+        ns_args["location"] = location
+    if load_balancing_group is not None:
+        ns_args["load-balancing-group"] = load_balancing_group
 
     LOG.info(
-        "Adding encrypted namespace: nqn=%s image=%s format=%s algo=%s key_id=%s",
+        "Adding encrypted namespace: nqn=%s image=%s format=%s algo=%s key_id=%s "
+        "location=%s lb_group=%s",
         nqn,
         image,
         luks_format,
         luks_algo,
         key_id,
+        location,
+        load_balancing_group,
     )
     gateway.namespace.add(**{"args": ns_args})
     return image
