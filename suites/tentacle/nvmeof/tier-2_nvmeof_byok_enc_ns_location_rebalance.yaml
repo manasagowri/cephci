@@ -116,12 +116,23 @@ tests:
         kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
         # 9.1 repro: false. 9.2z1 / fixed builds: true.
         expect_encrypted_ns_rebalance: false
+        require_encrypted_block_journal: true
+        jira_topology: true
         location_site_a: site-A
         location_site_b: site-B
-        rebalance_timeout_sec: 900
-        rebalance_poll_sec: 60
+        rebalance_timeout_sec: 600
+        rebalance_poll_sec: 30
         luks_combos:
-          - key_id: key-id-19516
+          - key_id: key-1
+            format: luks2
+            algo: aes256
+          - key_id: key-2
+            format: luks2
+            algo: aes256
+          - key_id: key-3
+            format: luks2
+            algo: aes256
+          - key_id: key-4
             format: luks2
             algo: aes256
         subsystems:
@@ -136,9 +147,9 @@ tests:
           - pool
           - gateway
       desc: >
-        IBMCEPH-19516 9.1 repro: set GW locations site-A/site-B, add encrypted
-        NS at site-A plus plain NS mix, change_location to site-B, and assert
-        encrypted NS stays stuck (or journal shows namespace is encrypted).
+        IBMCEPH-19516 9.1 repro: Jira-style encrypted+plain mix, change_location
+        to induce location≠ANA, assert stuck AND journal loops on
+        "not allowed rebalance: namespace is encrypted".
       destroy-cluster: false
       module: test_ceph_nvmeof_byok_encrypted_ns_location_rebalance.py
       name: IBMCEPH-19516 encrypted NS location rebalance

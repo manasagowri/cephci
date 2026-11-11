@@ -26,7 +26,7 @@ tests:
               service: cephadm
               args:
                 mon-ip: node1
-                registry-url: cp.icr.io
+                registry-url: preprod.icr.io
                 allow-fqdn-hostname: true
                 allow-overwrite: true
                 log-to-file: true
@@ -117,12 +117,24 @@ tests:
         kmip_server_image: quay.io/gdidi/kmip/kmip-server:latest
         kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
         expect_encrypted_ns_rebalance: true
+        require_encrypted_block_journal: false
+        jira_topology: true
+        verify_journal_settle_sec: 90
         location_site_a: site-A
         location_site_b: site-B
         rebalance_timeout_sec: 900
         rebalance_poll_sec: 60
         luks_combos:
-          - key_id: key-id-19516
+          - key_id: key-1
+            format: luks2
+            algo: aes256
+          - key_id: key-2
+            format: luks2
+            algo: aes256
+          - key_id: key-3
+            format: luks2
+            algo: aes256
+          - key_id: key-4
             format: luks2
             algo: aes256
         subsystems:
@@ -137,9 +149,10 @@ tests:
           - pool
           - gateway
       desc: >
-        IBMCEPH-19516 9.2z1 verify: set GW locations site-A/site-B, add encrypted
-        NS at site-A plus plain NS mix, change_location to site-B, and assert
-        encrypted NS rebalances onto the site-B ANA group.
+        IBMCEPH-19516 9.2z1 verify: Jira-style encrypted+plain mix,
+        change_location to induce location≠ANA, assert encrypted NS rebalances
+        to site-B ANA and GW journal does not keep looping
+        "not allowed rebalance: namespace is encrypted".
       destroy-cluster: false
       module: test_ceph_nvmeof_byok_encrypted_ns_location_rebalance.py
       name: IBMCEPH-19516 encrypted NS location rebalance verify

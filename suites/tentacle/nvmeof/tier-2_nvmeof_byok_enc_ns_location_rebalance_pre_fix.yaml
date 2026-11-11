@@ -1,0 +1,169 @@
+# IBMCEPH-19516: encrypted NS location rebalance — pre-fix stuck repro
+# cluster configuration: conf/tentacle/nvmeof/ceph_nvmeof_2GW_1Client.yaml
+# inventory: RHEL 10.x (9.2 GA / released images)
+#
+# Builds (from qe-ceph-manifest ibm/9.2.yaml released — BEFORE Fixed-in 20.2.2-364):
+#   Ceph 20.2.2-349 / ceph-9-rhel10:v9.9.2-26947 / nvmeof-rhel10:v9.9.2-26943
+#
+# Faithful Jira repro:
+#   - dense encrypted + plaintext mix across site-A/site-B
+#   - change_location induces location≠ANA mismatch
+#   - expect_encrypted_ns_rebalance: false
+#   - require_encrypted_block_journal: true  → must see
+#     "not allowed rebalance: namespace is encrypted" loop
+---
+tests:
+
+  - test:
+      abort-on-fail: true
+      module: install_prereq.py
+      name: install ceph pre-requisites
+
+  - test:
+      abort-on-fail: true
+      config:
+        verify_cluster_health: true
+        steps:
+          - config:
+              command: bootstrap
+              service: cephadm
+              args:
+                mon-ip: node1
+                registry-url: cp.icr.io
+                allow-fqdn-hostname: true
+                allow-overwrite: true
+                log-to-file: true
+          - config:
+              command: add_hosts
+              service: host
+              args:
+                attach_ip_address: true
+                labels: apply-all-labels
+          - config:
+              command: apply
+              service: mgr
+              args:
+                placement:
+                  label: mgr
+          - config:
+              command: apply
+              service: mon
+              args:
+                placement:
+                  label: mon
+          - config:
+              command: apply
+              service: osd
+              args:
+                all-available-devices: true
+      desc: IBM Ceph 9.2 GA (pre-19516-fix) cluster deployment using cephadm
+      destroy-cluster: false
+      module: test_cephadm.py
+      name: deploy cluster
+
+  - test:
+      abort-on-fail: true
+      config:
+        command: add
+        id: client.1
+        nodes:
+          - node10
+        copy_admin_keyring: true
+        install_packages:
+          - ceph-common
+          - nvme-cli
+          - fio
+      desc: Setup client for NVMe-oF BYOK IBMCEPH-19516 pre-fix repro
+      destroy-cluster: false
+      module: test_client.py
+      name: configure Ceph client for NVMe BYOK tests
+
+  - test:
+      abort-on-fail: true
+      config:
+        command: setup
+        initiator_node: node10
+        gw_nodes:
+          - node5
+          - node6
+        use_dummy_kmip: true
+        kmip_port: 5696
+        kmip_server_image: quay.io/gdidi/kmip/kmip-server:latest
+        kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
+        luks_combos: []
+      desc: >
+        Start a dummy KMIP server on the initiator node, copy certs to GW
+        hosts, and stash the handle for IBMCEPH-19516 pre-fix repro.
+      destroy-cluster: false
+      module: test_nvmeof_byok_kmip_setup.py
+      name: setup dummy KMIP server for BYOK tests
+
+  - test:
+      abort-on-fail: false
+      config:
+        install: true
+        spec_deployment: true
+        rbd_pool: rbd
+        do_not_create_image: true
+        rep-pool-only: true
+        rep_pool_config:
+          pool: rbd
+        gw_group: group
+        gw_nodes:
+          - node5
+          - node6
+        listener_port: 4420
+        initiator_node: node10
+        bdev_size: 2G
+        use_dummy_kmip: true
+        kmip_port: 5696
+        kmip_server_image: quay.io/gdidi/kmip/kmip-server:latest
+        kmip_cli_image: quay.io/gdidi/kmip/kmip-cli:latest
+        expect_encrypted_ns_rebalance: false
+        require_encrypted_block_journal: true
+        jira_topology: true
+        location_site_a: site-A
+        location_site_b: site-B
+        rebalance_timeout_sec: 600
+        rebalance_poll_sec: 30
+        luks_combos:
+          - key_id: key-1
+            format: luks2
+            algo: aes256
+          - key_id: key-2
+            format: luks2
+            algo: aes256
+          - key_id: key-3
+            format: luks2
+            algo: aes256
+          - key_id: key-4
+            format: luks2
+            algo: aes256
+        subsystems:
+          - nqn: nqn.2016-06.io.spdk:cnode-19516
+            no-group-append: true
+            allow_host: "*"
+            listeners:
+              - node5
+              - node6
+        cleanup:
+          - subsystems
+          - pool
+          - gateway
+      desc: >
+        IBMCEPH-19516 pre-fix (9.2 GA) stuck repro: Jira-style encrypted+plain
+        mix, change_location to induce location≠ANA, assert stuck AND GW journal
+        loops on "not allowed rebalance: namespace is encrypted".
+      destroy-cluster: false
+      module: test_ceph_nvmeof_byok_encrypted_ns_location_rebalance.py
+      name: IBMCEPH-19516 encrypted NS location rebalance pre-fix stuck repro
+      polarion-id: IBMCEPH-19516
+
+  - test:
+      abort-on-fail: false
+      config:
+        command: teardown
+      desc: Tear down suite-level dummy KMIP server
+      destroy-cluster: false
+      module: test_nvmeof_byok_kmip_setup.py
+      name: teardown dummy KMIP server for BYOK tests
